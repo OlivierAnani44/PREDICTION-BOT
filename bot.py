@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-FOOTBALL PREDICTION BOT - REAL DATA EDITION
-Optimized for Railway + Telegram with real ESPN statistics
+FOOTBALL PREDICTION BOT - OpenLigaDB Edition
+Utilise l'API OpenLigaDB et 10 modèles de calcul
 """
 
 import os
@@ -10,43 +10,298 @@ import json
 import sqlite3
 import logging
 import asyncio
-import signal
 import statistics
+import math
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any, Tuple
 import aiohttp
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 # ==================== CONFIGURATION ====================
+
 class Config:
-    """Railway-optimized configuration"""
+    """Configuration du bot"""
+    
+    @staticmethod
+    def validate():
+        errors = []
+        if not os.getenv("TELEGRAM_BOT_TOKEN"):
+            errors.append("TELEGRAM_BOT_TOKEN manquant")
+        if not os.getenv("TELEGRAM_CHANNEL_ID"):
+            errors.append("TELEGRAM_CHANNEL_ID manquant")
+        return errors
+    
     TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
     TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", "")
-    TIMEZONE = os.getenv("TIMEZONE", "UTC")
+    TIMEZONE = os.getenv("TIMEZONE", "Europe/Paris")
     DAILY_TIME = os.getenv("DAILY_TIME", "07:00")
-    MIN_CONFIDENCE = float(os.getenv("MIN_CONFIDENCE", "0.60"))
+    MIN_CONFIDENCE = float(os.getenv("MIN_CONFIDENCE", "0.65"))
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+    API_TIMEOUT = int(os.getenv("API_TIMEOUT", "30"))
     
-    # ESPN API Configuration
-    ESPN_BASE = "https://site.api.espn.com/apis/site/v2/sports"
-    LEAGUES = {
-        "premier_league": {"code": "eng.1", "name": "Premier League"},
-        "la_liga": {"code": "esp.1", "name": "La Liga"},
-        "bundesliga": {"code": "ger.1", "name": "Bundesliga"},
-        "serie_a": {"code": "ita.1", "name": "Serie A"},
-        "ligue_1": {"code": "fra.1", "name": "Ligue 1"},
-        "champions_league": {"code": "uefa.champions", "name": "UEFA Champions League"},
+    # Configuration OpenLigaDB
+    OPENLIGADB_BASE = "https://api.openligadb.de"
+    
+    # Mapping des ligues avec codes OpenLigaDB
+    LEAGUES_MAPPING = {
+        # Allemagne
+        "Bundesliga": {"code": "bl1", "season": 2025},
+        "Bundesliga 2": {"code": "bl2", "season": 2025},
+        "Coupe d'Allemagne": {"code": "dfbpokal", "season": 2025},
+        
+        # Angleterre  
+        "Premier League": {"code": "pl", "season": 2025},
+        "Championship": {"code": "elc", "season": 2025},
+        "FA Cup": {"code": "facup", "season": 2025},
+        
+        # Espagne
+        "Liga": {"code": "primera", "season": 2025},
+        "Segunda Division": {"code": "segunda", "season": 2025},
+        "Copa del Rey": {"code": "copadelrey", "season": 2025},
+        
+        # France
+        "Ligue 1": {"code": "ligue1", "season": 2025},
+        "Ligue 2": {"code": "ligue2", "season": 2025},
+        "Coupe de France": {"code": "coupedefrance", "season": 2025},
+        
+        # Italie
+        "Serie A": {"code": "seriea", "season": 2025},
+        "Serie B": {"code": "serieb", "season": 2025},
+        "Coupe d'Italie": {"code": "coppaitalia", "season": 2025},
+        
+        # Europe
+        "Ligue des champions": {"code": "cl", "season": 2025},
+        "Ligue Europa": {"code": "el", "season": 2025},
+        "Europa Conference League": {"code": "ecl", "season": 2025},
+        
+        # Portugal
+        "Liga": {"code": "liga", "season": 2025},
+        
+        # Pays-Bas
+        "Eredivisie": {"code": "eredivisie", "season": 2025},
+        
+        # Autres
+        "Saudi Pro League": {"code": "spl", "season": 2025},
+        "Major League Soccer": {"code": "mls", "season": 2025},
+    }
+    
+    # Modèles activés par défaut (seront ajustés selon données disponibles)
+    ENABLED_MODELS = {
+        "statistical": True,
+        "poisson": True,
+        "form": True,
+        "h2h": True,
+        "elo": False,  # Nécessite données historiques
+        "corners": False,  # Données limitées dans OpenLigaDB
+        "cards": False,
+        "shots": False,
+        "xG": False,
+        "combined": True
     }
 
-# ==================== REAL ESPN DATA COLLECTOR ====================
-class ESPNRealDataCollector:
-    """Collects REAL match statistics from ESPN API"""
+# ==================== LOGGING ====================
+
+logging.basicConfig(
+    level=getattr(logging, Config.LOG_LEVEL),
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler()]
+)
+logger = logging.getLogger(__name__)
+
+# ==================== DATABASE ====================
+
+class Database:
+    """Base de données pour stocker prédictions et données historiques"""
+    
+    def __init__(self):
+        self.conn = sqlite3.connect('football_predictions.db', check_same_thread=False)
+        self.init_db()
+    
+    def init_db(self):
+        """Initialise les tables"""
+        cursor = self.conn.cursor()
+        
+        # Table des prédictions
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS predictions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                match_id INTEGER UNIQUE,
+                league TEXT,
+                home_team TEXT,
+                away_team TEXT,
+                match_date TEXT,
+                confidence REAL,
+                predicted_score TEXT,
+                bet_type TEXT,
+                prediction_details TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        # Table des données historiques des équipes
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS team_stats (
+                team_id INTEGER,
+                team_name TEXT,
+                league TEXT,
+                season INTEGER,
+                matches_played INTEGER,
+                wins INTEGER,
+                draws INTEGER,
+                losses INTEGER,
+                goals_for INTEGER,
+                goals_against INTEGER,
+                avg_goals_for REAL,
+                avg_goals_against REAL,
+                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (team_id, league, season)
+            )
+        ''')
+        
+        # Table des matchs historiques
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS match_history (
+                match_id INTEGER PRIMARY KEY,
+                league TEXT,
+                season INTEGER,
+                match_date TEXT,
+                home_team_id INTEGER,
+                home_team_name TEXT,
+                away_team_id INTEGER,
+                away_team_name TEXT,
+                home_score INTEGER,
+                away_score INTEGER,
+                result TEXT,
+                goals TEXT,
+                location TEXT,
+                spectators INTEGER
+            )
+        ''')
+        
+        self.conn.commit()
+    
+    def save_prediction(self, pred):
+        """Sauvegarde une prédiction"""
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute('''
+                INSERT OR REPLACE INTO predictions 
+                (match_id, league, home_team, away_team, match_date, 
+                 confidence, predicted_score, bet_type, prediction_details)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                pred.get('match_id'),
+                pred.get('league'),
+                pred.get('home_team'),
+                pred.get('away_team'),
+                pred.get('match_date'),
+                pred.get('confidence', 0),
+                pred.get('predicted_score', ''),
+                pred.get('bet_type', ''),
+                json.dumps(pred.get('details', {}))
+            ))
+            self.conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Erreur sauvegarde prédiction: {e}")
+            return False
+    
+    def get_team_history(self, team_id, league, limit=10):
+        """Récupère l'historique d'une équipe"""
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute('''
+                SELECT * FROM match_history 
+                WHERE (home_team_id = ? OR away_team_id = ?) 
+                AND league = ?
+                ORDER BY match_date DESC 
+                LIMIT ?
+            ''', (team_id, team_id, league, limit))
+            
+            rows = cursor.fetchall()
+            columns = [desc[0] for desc in cursor.description]
+            
+            history = []
+            for row in rows:
+                match = dict(zip(columns, row))
+                
+                # Déterminer le résultat pour cette équipe
+                if match['home_team_id'] == team_id:
+                    team_score = match['home_score']
+                    opp_score = match['away_score']
+                    is_home = True
+                else:
+                    team_score = match['away_score']
+                    opp_score = match['home_score']
+                    is_home = False
+                
+                # Déterminer le résultat
+                if team_score > opp_score:
+                    result = 'WIN'
+                elif team_score < opp_score:
+                    result = 'LOSS'
+                else:
+                    result = 'DRAW'
+                
+                history.append({
+                    'date': match['match_date'],
+                    'team_score': team_score,
+                    'opponent_score': opp_score,
+                    'result': result,
+                    'is_home': is_home,
+                    'opponent': match['away_team_name'] if is_home else match['home_team_name']
+                })
+            
+            return history
+        except Exception as e:
+            logger.error(f"Erreur récupération historique: {e}")
+            return []
+    
+    def save_match_data(self, match_data):
+        """Sauvegarde les données d'un match"""
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute('''
+                INSERT OR REPLACE INTO match_history 
+                (match_id, league, season, match_date, home_team_id, home_team_name,
+                 away_team_id, away_team_name, home_score, away_score, result, goals, location, spectators)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                match_data['matchID'],
+                match_data.get('leagueShortcut', ''),
+                match_data.get('leagueSeason', 0),
+                match_data.get('matchDateTime', ''),
+                match_data['team1']['teamId'],
+                match_data['team1']['teamName'],
+                match_data['team2']['teamId'],
+                match_data['team2']['teamName'],
+                match_data.get('matchResults', [{}])[0].get('pointsTeam1', 0) if match_data.get('matchResults') else 0,
+                match_data.get('matchResults', [{}])[0].get('pointsTeam2', 0) if match_data.get('matchResults') else 0,
+                'DRAW',  # À calculer
+                json.dumps(match_data.get('goals', [])),
+                json.dumps(match_data.get('location', {})),
+                match_data.get('numberOfViewers', 0)
+            ))
+            self.conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Erreur sauvegarde match: {e}")
+            return False
+    
+    def close(self):
+        self.conn.close()
+
+# ==================== OPENLIGADB COLLECTOR ====================
+
+class OpenLigaDBCollector:
+    """Collecteur de données OpenLigaDB"""
     
     def __init__(self):
         self.session = None
+        self.base_url = Config.OPENLIGADB_BASE
         self.headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'User-Agent': 'FootballPredictionBot/1.0',
             'Accept': 'application/json'
         }
     
@@ -58,567 +313,1188 @@ class ESPNRealDataCollector:
         if self.session:
             await self.session.close()
     
-    async def fetch_upcoming_matches(self, days_ahead=1):
-        """Fetches REAL upcoming matches from ESPN"""
-        target_date = datetime.now() + timedelta(days=days_ahead)
-        date_str = target_date.strftime("%Y%m%d")
+    async def fetch_today_matches(self):
+        """Récupère les matchs du jour pour toutes les ligues"""
+        logger.info("📡 Collecte des matchs du jour...")
         
+        today = datetime.now().strftime("%Y-%m-%d")
         all_matches = []
-        for league_key, league_info in Config.LEAGUES.items():
+        
+        for league_name, league_info in Config.LEAGUES_MAPPING.items():
             try:
-                url = f"{Config.ESPN_BASE}/soccer/{league_info['code']}/scoreboard"
-                params = {"dates": date_str}
+                league_code = league_info["code"]
+                season = league_info["season"]
                 
-                async with self.session.get(url, params=params, timeout=30) as response:
+                # Essayer de récupérer le groupe/playday actuel
+                current_group = await self._get_current_group(league_code)
+                if not current_group:
+                    logger.debug(f"⚠️ Pas de groupe actuel pour {league_name}")
+                    continue
+                
+                # Récupérer les matchs du groupe actuel
+                url = f"{self.base_url}/getmatchdata/{league_code}/{season}/{current_group}"
+                
+                async with self.session.get(url, timeout=Config.API_TIMEOUT) as response:
                     if response.status == 200:
-                        data = await response.json()
-                        matches = self._parse_matches(data, league_info["name"])
-                        all_matches.extend(matches)
+                        matches = await response.json()
+                        
+                        # Filtrer les matchs d'aujourd'hui
+                        for match in matches:
+                            match_date = match.get('matchDateTime', '')
+                            if today in match_date:
+                                match_data = {
+                                    'match_id': match['matchID'],
+                                    'league': league_name,
+                                    'league_code': league_code,
+                                    'date': match_date,
+                                    'home_team': {
+                                        'id': match['team1']['teamId'],
+                                        'name': match['team1']['teamName'],
+                                        'short': match['team1']['shortName']
+                                    },
+                                    'away_team': {
+                                        'id': match['team2']['teamId'],
+                                        'name': match['team2']['teamName'],
+                                        'short': match['team2']['shortName']
+                                    },
+                                    'is_finished': match.get('matchIsFinished', False),
+                                    'raw_data': match
+                                }
+                                
+                                all_matches.append(match_data)
+                                logger.debug(f"✅ Match trouvé: {match['team1']['teamName']} vs {match['team2']['teamName']}")
                     
-                await asyncio.sleep(0.3)  # Rate limiting
+                    else:
+                        logger.warning(f"⚠️ {league_name}: HTTP {response.status}")
                 
+                await asyncio.sleep(0.3)  # Respect rate limit
+                
+            except asyncio.TimeoutError:
+                logger.error(f"⏱️ Timeout pour {league_name}")
+                continue
             except Exception as e:
-                logging.error(f"Error fetching {league_info['name']}: {e}")
+                logger.error(f"❌ Erreur {league_name}: {str(e)[:100]}")
                 continue
         
+        logger.info(f"📊 Total matchs du jour: {len(all_matches)}")
         return all_matches
     
-    async def fetch_team_recent_stats(self, team_id, league_code="eng.1", match_limit=5):
-        """Fetches REAL recent statistics for a team"""
+    async def _get_current_group(self, league_code):
+        """Récupère le groupe/playday actuel"""
         try:
-            # First get recent matches for the team
-            url = f"{Config.ESPN_BASE}/soccer/{league_code}/teams/{team_id}"
-            
-            async with self.session.get(url, timeout=30) as response:
+            url = f"{self.base_url}/getcurrentgroup/{league_code}"
+            async with self.session.get(url, timeout=10) as response:
                 if response.status == 200:
                     data = await response.json()
-                    return self._extract_team_stats(data, match_limit)
-            
-            return self._generate_default_stats()
-            
-        except Exception as e:
-            logging.error(f"Error fetching team stats: {e}")
-            return self._generate_default_stats()
+                    return data.get('groupOrderID', 1)
+        except:
+            return 1  # Fallback au premier groupe
     
-    def _parse_matches(self, data, league_name):
-        """Parses REAL match data from ESPN response"""
-        matches = []
-        
-        if not data or 'events' not in data:
-            return matches
-        
-        for event in data['events']:
-            try:
-                competitions = event.get('competitions', [{}])[0]
-                competitors = competitions.get('competitors', [])
-                
-                if len(competitors) != 2:
-                    continue
-                
-                home_team = None
-                away_team = None
-                
-                for competitor in competitors:
-                    if competitor.get('homeAway') == 'home':
-                        home_team = competitor.get('team', {})
-                    elif competitor.get('homeAway') == 'away':
-                        away_team = competitor.get('team', {})
-                
-                if not home_team or not away_team:
-                    continue
-                
-                match_data = {
-                    'match_id': event.get('id', ''),
-                    'league': league_name,
-                    'league_code': Config.LEAGUES.get(league_name.lower().replace(' ', '_'), {}).get('code', 'eng.1'),
-                    'date': event.get('date', ''),
-                    'status': event.get('status', {}).get('type', {}).get('description', 'Scheduled'),
-                    'home_team': {
-                        'id': home_team.get('id', ''),
-                        'name': home_team.get('displayName', ''),
-                        'short': home_team.get('abbreviation', '')
-                    },
-                    'away_team': {
-                        'id': away_team.get('id', ''),
-                        'name': away_team.get('displayName', ''),
-                        'short': away_team.get('abbreviation', '')
-                    }
-                }
-                
-                matches.append(match_data)
-                
-            except Exception as e:
-                logging.debug(f"Error parsing match: {e}")
-                continue
-        
-        return matches
-    
-    def _extract_team_stats(self, data, match_limit):
-        """Extracts REAL statistics from team data"""
-        # This is a simplified version - in production you'd parse actual match history
-        # For now, we'll use realistic defaults based on team performance
-        
-        stats = {
-            'form_last_5': ['W', 'D', 'L', 'W', 'W'],  # Example form
-            'avg_goals_scored': 1.8,
-            'avg_goals_conceded': 1.2,
-            'home_performance': 0.65,  # Win percentage at home
-            'away_performance': 0.45,  # Win percentage away
-            'clean_sheets': 3,
-            'total_matches': match_limit
-        }
-        
-        return stats
-    
-    def _generate_default_stats(self):
-        """Generates default stats when API fails"""
-        return {
-            'form_last_5': ['D', 'D', 'L', 'W', 'D'],
-            'avg_goals_scored': 1.5,
-            'avg_goals_conceded': 1.5,
-            'home_performance': 0.5,
-            'away_performance': 0.4,
-            'clean_sheets': 2,
-            'total_matches': 5
-        }
-
-# ==================== REAL DATA ANALYZER ====================
-class RealDataAnalyzer:
-    """Analyzes REAL football statistics for predictions"""
-    
-    def __init__(self):
-        self.config = {
-            "min_matches_for_analysis": 3,
-            "weight_form": 0.30,
-            "weight_offense": 0.25,
-            "weight_defense": 0.25,
-            "weight_home_advantage": 0.20,
-        }
-    
-    def analyze_match(self, match_data, home_stats, away_stats):
-        """Analyzes a match using REAL statistics"""
+    async def fetch_team_history(self, team_id, team_name, league_code, season, limit=8):
+        """Récupère l'historique récent d'une équipe"""
         try:
-            # Calculate form points (3 for win, 1 for draw, 0 for loss)
-            home_form_score = self._calculate_form_score(home_stats['form_last_5'])
-            away_form_score = self._calculate_form_score(away_stats['form_last_5'])
+            # Utiliser l'endpoint getmatchesbyteamid
+            url = f"{self.base_url}/getmatchesbyteamid/{team_id}/4/0"  # 4 semaines passées, 0 futures
             
-            # Calculate offensive/defensive strength
-            home_offense = home_stats['avg_goals_scored'] / 3.0  # Normalize to 0-1
-            home_defense = 1.0 - (home_stats['avg_goals_conceded'] / 3.0)
-            away_offense = away_stats['avg_goals_scored'] / 3.0
-            away_defense = 1.0 - (away_stats['avg_goals_conceded'] / 3.0)
+            async with self.session.get(url, timeout=Config.API_TIMEOUT) as response:
+                if response.status == 200:
+                    matches = await response.json()
+                    
+                    history = []
+                    for match in matches[:limit]:  # Limiter aux derniers matchs
+                        # Déterminer si c'est l'équipe à domicile ou à l'extérieur
+                        is_home = match['team1']['teamId'] == team_id
+                        
+                        if is_home:
+                            team_score = match.get('matchResults', [{}])[0].get('pointsTeam1', 0)
+                            opp_score = match.get('matchResults', [{}])[0].get('pointsTeam2', 0)
+                        else:
+                            team_score = match.get('matchResults', [{}])[0].get('pointsTeam2', 0)
+                            opp_score = match.get('matchResults', [{}])[0].get('pointsTeam1', 0)
+                        
+                        # Déterminer le résultat
+                        if team_score > opp_score:
+                            result = 'WIN'
+                        elif team_score < opp_score:
+                            result = 'LOSS'
+                        else:
+                            result = 'DRAW'
+                        
+                        history.append({
+                            'date': match.get('matchDateTime', ''),
+                            'team_score': team_score,
+                            'opponent_score': opp_score,
+                            'result': result,
+                            'is_home': is_home,
+                            'opponent': match['team2']['teamName'] if is_home else match['team1']['teamName']
+                        })
+                    
+                    return history
+                else:
+                    logger.warning(f"⚠️ Pas d'historique pour {team_name}")
+                    return []
+                    
+        except Exception as e:
+            logger.error(f"Erreur historique {team_name}: {e}")
+            return []
+    
+    async def fetch_head_to_head(self, team1_id, team2_id):
+        """Récupère les confrontations directes"""
+        try:
+            url = f"{self.base_url}/getmatchdata/{team1_id}/{team2_id}"
+            async with self.session.get(url, timeout=Config.API_TIMEOUT) as response:
+                if response.status == 200:
+                    matches = await response.json()
+                    
+                    h2h_stats = {
+                        'total_matches': len(matches),
+                        'team1_wins': 0,
+                        'team2_wins': 0,
+                        'draws': 0,
+                        'team1_goals': 0,
+                        'team2_goals': 0,
+                        'recent_matches': []
+                    }
+                    
+                    for match in matches[:5]:  # 5 dernières rencontres
+                        result = match.get('matchResults', [{}])[0]
+                        team1_score = result.get('pointsTeam1', 0)
+                        team2_score = result.get('pointsTeam2', 0)
+                        
+                        h2h_stats['team1_goals'] += team1_score
+                        h2h_stats['team2_goals'] += team2_score
+                        
+                        if team1_score > team2_score:
+                            h2h_stats['team1_wins'] += 1
+                        elif team2_score > team1_score:
+                            h2h_stats['team2_wins'] += 1
+                        else:
+                            h2h_stats['draws'] += 1
+                        
+                        h2h_stats['recent_matches'].append({
+                            'date': match.get('matchDateTime', ''),
+                            'score': f"{team1_score}-{team2_score}",
+                            'winner': 'team1' if team1_score > team2_score else 'team2' if team2_score > team1_score else 'draw'
+                        })
+                    
+                    return h2h_stats
+                else:
+                    return None
+                    
+        except Exception as e:
+            logger.error(f"Erreur H2H: {e}")
+            return None
+
+# ==================== MODÈLES DE CALCUL ====================
+
+class PredictionModels:
+    """Implémentation des 10 modèles de calcul"""
+    
+    def __init__(self, db):
+        self.db = db
+        self.enabled_models = Config.ENABLED_MODELS
+        
+    def analyze_match(self, match_data, home_history, away_history, h2h_data):
+        """Analyse un match avec tous les modèles disponibles"""
+        try:
+            home_team = match_data['home_team']['name']
+            away_team = match_data['away_team']['name']
             
-            # Home advantage
-            home_advantage = home_stats['home_performance'] - 0.5
+            # 1. Vérifier les données disponibles
+            available_data = self._check_available_data(home_history, away_history, h2h_data)
             
-            # Combined score
-            home_strength = (
-                home_form_score * self.config['weight_form'] +
-                home_offense * self.config['weight_offense'] +
-                home_defense * self.config['weight_defense'] +
-                home_advantage * self.config['weight_home_advantage']
-            )
+            # 2. Exécuter les modèles disponibles
+            model_results = {}
             
-            away_strength = (
-                away_form_score * self.config['weight_form'] +
-                away_offense * self.config['weight_offense'] +
-                away_defense * self.config['weight_defense']
-            )
+            # Modèle 1: Statistique pondéré
+            if self.enabled_models['statistical'] and available_data['goals'] and available_data['form']:
+                model_results['statistical'] = self._statistical_model(
+                    home_history, away_history, h2h_data
+                )
             
-            # Normalize to probabilities
-            total = home_strength + away_strength + 0.3  # Add draw probability base
-            home_win_prob = home_strength / total
-            away_win_prob = away_strength / total
-            draw_prob = 0.3 / total
+            # Modèle 2: Poisson (buts)
+            if self.enabled_models['poisson'] and available_data['goals']:
+                model_results['poisson'] = self._poisson_model(
+                    home_history, away_history
+                )
             
-            # Generate prediction
-            prediction = self._generate_prediction(
-                home_win_prob, draw_prob, away_win_prob,
-                home_stats, away_stats
-            )
+            # Modèle 3: Forme récente
+            if self.enabled_models['form'] and available_data['form']:
+                model_results['form'] = self._form_model(home_history, away_history)
             
-            # Calculate confidence
-            confidence = self._calculate_confidence(
-                home_stats['total_matches'],
-                away_stats['total_matches'],
-                home_stats['form_last_5'],
-                away_stats['form_last_5']
-            )
+            # Modèle 4: Face-à-face
+            if self.enabled_models['h2h'] and h2h_data and h2h_data['total_matches'] > 0:
+                model_results['h2h'] = self._h2h_model(h2h_data)
+            
+            # Modèle 10: Combiné (utilise les autres modèles)
+            if self.enabled_models['combined'] and model_results:
+                model_results['combined'] = self._combined_model(model_results)
+            
+            # 3. Générer la prédiction finale
+            if not model_results:
+                logger.warning(f"⚠️ Aucun modèle applicable pour {home_team} vs {away_team}")
+                return None
+            
+            final_prediction = self._generate_final_prediction(model_results, available_data)
             
             return {
                 'match_id': match_data['match_id'],
-                'home_team': match_data['home_team']['name'],
-                'away_team': match_data['away_team']['name'],
+                'home_team': home_team,
+                'away_team': away_team,
                 'league': match_data['league'],
                 'date': match_data['date'],
-                'confidence': confidence,
-                'probabilities': {
-                    'home_win': round(home_win_prob, 3),
-                    'draw': round(draw_prob, 3),
-                    'away_win': round(away_win_prob, 3)
-                },
-                'prediction': prediction
+                'confidence': final_prediction['confidence'],
+                'prediction': final_prediction,
+                'model_details': model_results,
+                'available_models': list(model_results.keys())
             }
             
         except Exception as e:
-            logging.error(f"Analysis error: {e}")
+            logger.error(f"Erreur analyse match: {e}")
             return None
     
-    def _calculate_form_score(self, form):
-        """Calculates form score from last 5 results"""
-        points = 0
-        for result in form:
-            if result == 'W':
-                points += 3
-            elif result == 'D':
-                points += 1
-        return points / 15.0  # Max 15 points
+    def _check_available_data(self, home_history, away_history, h2h_data):
+        """Vérifie quelles données sont disponibles"""
+        return {
+            'goals': len(home_history) >= 3 and len(away_history) >= 3,
+            'form': len(home_history) >= 5 and len(away_history) >= 5,
+            'h2h': h2h_data is not None and h2h_data['total_matches'] > 0,
+            'shots': False,  # Non disponible dans OpenLigaDB
+            'corners': False,  # Non disponible
+            'cards': False,  # Non disponible
+            'xG': False  # Non disponible
+        }
     
-    def _generate_prediction(self, home_win, draw, away_win, home_stats, away_stats):
-        """Generates prediction based on probabilities"""
-        max_prob = max(home_win, draw, away_win)
-        
-        if max_prob == home_win and home_win >= 0.45:
-            if home_win >= 0.6:
-                return {"bet": "1", "type": "Victoire domicile", "emoji": "🏠✅", "odds": "~1.80"}
-            else:
-                return {"bet": "1X", "type": "Double chance 1X", "emoji": "🏠🤝", "odds": "~1.30"}
-        elif max_prob == away_win and away_win >= 0.45:
-            if away_win >= 0.6:
-                return {"bet": "2", "type": "Victoire extérieur", "emoji": "✈️✅", "odds": "~2.10"}
-            else:
-                return {"bet": "X2", "type": "Double chance X2", "emoji": "✈️🤝", "odds": "~1.40"}
-        else:
-            return {"bet": "X", "type": "Match nul", "emoji": "⚖️", "odds": "~3.20"}
+    def _statistical_model(self, home_history, away_history, h2h_data):
+        """Modèle 1: Statistique pondéré"""
+        try:
+            # Calculer les moyennes
+            home_goals = [m['team_score'] for m in home_history]
+            home_conceded = [m['opponent_score'] for m in home_history]
+            
+            away_goals = [m['team_score'] for m in away_history]
+            away_conceded = [m['opponent_score'] for m in away_history]
+            
+            avg_home_goals = statistics.mean(home_goals) if home_goals else 1.0
+            avg_home_conceded = statistics.mean(home_conceded) if home_conceded else 1.0
+            avg_away_goals = statistics.mean(away_goals) if away_goals else 1.0
+            avg_away_conceded = statistics.mean(away_conceded) if away_conceded else 1.0
+            
+            # Forme récente (derniers 5 matchs)
+            home_recent = home_history[-5:] if len(home_history) >= 5 else home_history
+            away_recent = away_history[-5:] if len(away_history) >= 5 else away_history
+            
+            home_form_score = self._calculate_form_score(home_recent)
+            away_form_score = self._calculate_form_score(away_recent)
+            
+            # H2H (si disponible)
+            h2h_score = 0.5  # Par défaut neutre
+            if h2h_data and h2h_data['total_matches'] > 0:
+                h2h_score = h2h_data['team1_wins'] / h2h_data['total_matches'] if h2h_data['total_matches'] > 0 else 0.5
+            
+            # Appliquer les pondérations
+            home_attack = (avg_home_goals * 0.3 + (2.0 - avg_away_conceded) * 0.2) / 0.5
+            away_attack = (avg_away_goals * 0.3 + (2.0 - avg_home_conceded) * 0.2) / 0.5
+            
+            home_advantage = 0.1  # Avantage domicile fixe
+            
+            home_strength = home_attack * 0.3 + home_form_score * 0.15 + h2h_score * 0.1 + home_advantage * 0.1
+            away_strength = away_attack * 0.3 + away_form_score * 0.15 + (1 - h2h_score) * 0.1
+            
+            # Normaliser
+            total = home_strength + away_strength
+            home_win_prob = home_strength / total
+            away_win_prob = away_strength / total
+            draw_prob = 0.25 * (1.0 - abs(home_win_prob - away_win_prob))
+            
+            # Ajuster pour somme = 1
+            home_win_prob = home_win_prob * (1 - draw_prob)
+            away_win_prob = away_win_prob * (1 - draw_prob)
+            
+            return {
+                'home_win': round(home_win_prob, 3),
+                'draw': round(draw_prob, 3),
+                'away_win': round(away_win_prob, 3),
+                'expected_home_goals': round(avg_home_goals, 2),
+                'expected_away_goals': round(avg_away_goals, 2)
+            }
+            
+        except Exception as e:
+            logger.error(f"Erreur modèle statistique: {e}")
+            return {'home_win': 0.33, 'draw': 0.34, 'away_win': 0.33}
     
-    def _calculate_confidence(self, home_matches, away_matches, home_form, away_form):
-        """Calculates confidence score"""
-        data_quality = min((home_matches + away_matches) / 10.0, 1.0)
+    def _poisson_model(self, home_history, away_history):
+        """Modèle 2: Distribution de Poisson pour les buts"""
+        try:
+            # Moyennes de buts
+            home_goals = [m['team_score'] for m in home_history if m['is_home']]
+            home_conceded = [m['opponent_score'] for m in home_history if m['is_home']]
+            
+            away_goals = [m['team_score'] for m in away_history if not m['is_home']]
+            away_conceded = [m['opponent_score'] for m in away_history if not m['is_home']]
+            
+            if not home_goals or not away_goals:
+                return None
+            
+            lambda_home = statistics.mean(home_goals) * statistics.mean(away_conceded)
+            lambda_away = statistics.mean(away_goals) * statistics.mean(home_conceded)
+            
+            # Calculer les probabilités de score exact
+            score_probs = {}
+            max_goals = 4
+            
+            for i in range(max_goals + 1):
+                for j in range(max_goals + 1):
+                    prob = self._poisson_prob(i, lambda_home) * self._poisson_prob(j, lambda_away)
+                    score_probs[f"{i}-{j}"] = round(prob, 4)
+            
+            # Probabilités 1X2
+            home_win_prob = 0
+            draw_prob = 0
+            away_win_prob = 0
+            
+            for score, prob in score_probs.items():
+                home, away = map(int, score.split('-'))
+                if home > away:
+                    home_win_prob += prob
+                elif home == away:
+                    draw_prob += prob
+                else:
+                    away_win_prob += prob
+            
+            # Over/Under
+            over_25_prob = 0
+            under_25_prob = 0
+            
+            for score, prob in score_probs.items():
+                home, away = map(int, score.split('-'))
+                if home + away > 2.5:
+                    over_25_prob += prob
+                else:
+                    under_25_prob += prob
+            
+            # BTTS
+            btts_prob = 0
+            for score, prob in score_probs.items():
+                home, away = map(int, score.split('-'))
+                if home > 0 and away > 0:
+                    btts_prob += prob
+            
+            return {
+                'home_win': round(home_win_prob, 3),
+                'draw': round(draw_prob, 3),
+                'away_win': round(away_win_prob, 3),
+                'over_25': round(over_25_prob, 3),
+                'under_25': round(under_25_prob, 3),
+                'btts': round(btts_prob, 3),
+                'lambda_home': round(lambda_home, 2),
+                'lambda_away': round(lambda_away, 2),
+                'most_likely_score': max(score_probs, key=score_probs.get)
+            }
+            
+        except Exception as e:
+            logger.error(f"Erreur modèle Poisson: {e}")
+            return None
+    
+    def _poisson_prob(self, k, lambd):
+        """Probabilité de Poisson"""
+        return (math.exp(-lambd) * (lambd ** k)) / math.factorial(k)
+    
+    def _form_model(self, home_history, away_history):
+        """Modèle 3: Forme récente"""
+        try:
+            # Derniers 8 matchs
+            home_recent = home_history[-8:] if len(home_history) >= 8 else home_history
+            away_recent = away_history[-8:] if len(away_history) >= 8 else away_history
+            
+            if not home_recent or not away_recent:
+                return None
+            
+            home_form = self._calculate_form_score(home_recent)
+            away_form = self._calculate_form_score(away_recent)
+            
+            # Consistance (écart-type bas = bonne consistance)
+            home_results = [1 if m['result'] == 'WIN' else 0.5 if m['result'] == 'DRAW' else 0 for m in home_recent]
+            away_results = [1 if m['result'] == 'WIN' else 0.5 if m['result'] == 'DRAW' else 0 for m in away_recent]
+            
+            home_consistency = 1.0 - (statistics.stdev(home_results) if len(home_results) > 1 else 0.5)
+            away_consistency = 1.0 - (statistics.stdev(away_results) if len(away_results) > 1 else 0.5)
+            
+            # Force de forme pondérée
+            home_strength = home_form * home_consistency
+            away_strength = away_form * away_consistency
+            
+            total = home_strength + away_strength
+            if total == 0:
+                return {'home_win': 0.33, 'draw': 0.34, 'away_win': 0.33}
+            
+            home_win_prob = home_strength / total
+            away_win_prob = away_strength / total
+            draw_prob = 0.3 * (1.0 - abs(home_win_prob - away_win_prob))
+            
+            # Normaliser
+            home_win_prob *= (1 - draw_prob)
+            away_win_prob *= (1 - draw_prob)
+            
+            return {
+                'home_win': round(home_win_prob, 3),
+                'draw': round(draw_prob, 3),
+                'away_win': round(away_win_prob, 3),
+                'home_form': round(home_form, 3),
+                'away_form': round(away_form, 3),
+                'home_consistency': round(home_consistency, 3),
+                'away_consistency': round(away_consistency, 3)
+            }
+            
+        except Exception as e:
+            logger.error(f"Erreur modèle forme: {e}")
+            return None
+    
+    def _calculate_form_score(self, matches):
+        """Calcule le score de forme (0-1)"""
+        if not matches:
+            return 0.5
         
-        # Form consistency
-        home_consistency = home_form.count('W') + home_form.count('D') / 2
-        away_consistency = away_form.count('W') + away_form.count('D') / 2
-        form_quality = (home_consistency + away_consistency) / 10.0
+        total_points = 0
+        for match in matches:
+            if match['result'] == 'WIN':
+                total_points += 3
+            elif match['result'] == 'DRAW':
+                total_points += 1
         
-        confidence = 0.6 * data_quality + 0.4 * form_quality
-        return max(0.3, min(0.95, confidence))
+        max_points = len(matches) * 3
+        return total_points / max_points if max_points > 0 else 0.5
+    
+    def _h2h_model(self, h2h_data):
+        """Modèle 4: Face-à-face"""
+        try:
+            total = h2h_data['total_matches']
+            if total == 0:
+                return {'home_win': 0.33, 'draw': 0.34, 'away_win': 0.33}
+            
+            home_win_prob = h2h_data['team1_wins'] / total
+            draw_prob = h2h_data['draws'] / total
+            away_win_prob = h2h_data['team2_wins'] / total
+            
+            # Poids selon le nombre de matchs
+            weight = min(total / 5.0, 1.0)  # Maximum poids 1.0 si 5+ matchs
+            
+            return {
+                'home_win': round(home_win_prob, 3),
+                'draw': round(draw_prob, 3),
+                'away_win': round(away_win_prob, 3),
+                'weight': round(weight, 2),
+                'total_matches': total,
+                'avg_home_goals': round(h2h_data['team1_goals'] / total, 2) if total > 0 else 0,
+                'avg_away_goals': round(h2h_data['team2_goals'] / total, 2) if total > 0 else 0
+            }
+            
+        except Exception as e:
+            logger.error(f"Erreur modèle H2H: {e}")
+            return None
+    
+    def _combined_model(self, model_results):
+        """Modèle 10: Combiné (fusionne les autres modèles)"""
+        try:
+            weights = {
+                'statistical': 0.35,
+                'poisson': 0.25,
+                'form': 0.20,
+                'h2h': 0.10,
+                'elo': 0.10
+            }
+            
+            total_home = 0
+            total_draw = 0
+            total_away = 0
+            total_weight = 0
+            
+            for model_name, results in model_results.items():
+                if model_name in weights and results:
+                    weight = weights.get(model_name, 0.10)
+                    
+                    total_home += results.get('home_win', 0.33) * weight
+                    total_draw += results.get('draw', 0.34) * weight
+                    total_away += results.get('away_win', 0.33) * weight
+                    total_weight += weight
+            
+            if total_weight == 0:
+                return {'home_win': 0.33, 'draw': 0.34, 'away_win': 0.33}
+            
+            # Normaliser
+            home_win_prob = total_home / total_weight
+            draw_prob = total_draw / total_weight
+            away_win_prob = total_away / total_weight
+            
+            # Ajuster pour somme = 1
+            total = home_win_prob + draw_prob + away_win_prob
+            home_win_prob /= total
+            draw_prob /= total
+            away_win_prob /= total
+            
+            return {
+                'home_win': round(home_win_prob, 3),
+                'draw': round(draw_prob, 3),
+                'away_win': round(away_win_prob, 3),
+                'models_used': list(model_results.keys()),
+                'confidence': round(min(home_win_prob, draw_prob, away_win_prob) * 3, 3)  # Score de confiance
+            }
+            
+        except Exception as e:
+            logger.error(f"Erreur modèle combiné: {e}")
+            return None
+    
+    def _generate_final_prediction(self, model_results, available_data):
+        """Génère la prédiction finale"""
+        try:
+            # Utiliser le modèle combiné si disponible, sinon le meilleur modèle
+            if 'combined' in model_results:
+                final = model_results['combined']
+            else:
+                # Prendre le modèle avec la plus haute confiance
+                best_model = None
+                best_confidence = 0
+                
+                for model_name, results in model_results.items():
+                    if results:
+                        confidence = max(results.get('home_win', 0), 
+                                       results.get('draw', 0), 
+                                       results.get('away_win', 0))
+                        if confidence > best_confidence:
+                            best_confidence = confidence
+                            best_model = results
+                
+                final = best_model if best_model else {'home_win': 0.33, 'draw': 0.34, 'away_win': 0.33}
+            
+            # Déterminer la recommandation
+            home_win = final.get('home_win', 0)
+            draw = final.get('draw', 0)
+            away_win = final.get('away_win', 0)
+            
+            max_prob = max(home_win, draw, away_win)
+            
+            if max_prob == home_win and home_win >= 0.45:
+                if home_win >= 0.55:
+                    recommendation = "VICTOIRE DOMICILE"
+                    bet_type = "1"
+                    emoji = "🏠✅"
+                    confidence_score = home_win
+                else:
+                    recommendation = "DOUBLE CHANCE 1X"
+                    bet_type = "1X"
+                    emoji = "🏠🤝"
+                    confidence_score = home_win + draw
+                    
+            elif max_prob == away_win and away_win >= 0.45:
+                if away_win >= 0.55:
+                    recommendation = "VICTOIRE EXTERIEUR"
+                    bet_type = "2"
+                    emoji = "✈️✅"
+                    confidence_score = away_win
+                else:
+                    recommendation = "DOUBLE CHANCE X2"
+                    bet_type = "X2"
+                    emoji = "✈️🤝"
+                    confidence_score = away_win + draw
+                    
+            elif draw >= 0.35:
+                recommendation = "MATCH NUL"
+                bet_type = "X"
+                emoji = "⚖️"
+                confidence_score = draw
+            else:
+                # Par défaut: double chance la plus probable
+                if home_win + draw > away_win + draw:
+                    recommendation = "DOUBLE CHANCE 1X"
+                    bet_type = "1X"
+                    emoji = "🤝"
+                    confidence_score = home_win + draw
+                else:
+                    recommendation = "DOUBLE CHANCE X2"
+                    bet_type = "X2"
+                    emoji = "🤝"
+                    confidence_score = away_win + draw
+            
+            # Score prédit (basé sur Poisson si disponible)
+            predicted_score = "1-1"  # Par défaut
+            if 'poisson' in model_results and model_results['poisson']:
+                predicted_score = model_results['poisson'].get('most_likely_score', '1-1')
+            
+            # Over/Under
+            over_under = "OVER 2.5" if (home_win + away_win > 0.6) else "UNDER 2.5"
+            
+            # BTTS
+            btts = "OUI" if ('poisson' in model_results and 
+                           model_results['poisson'].get('btts', 0) > 0.5) else "NON"
+            
+            return {
+                'recommendation': recommendation,
+                'bet_type': bet_type,
+                'emoji': emoji,
+                'confidence': round(confidence_score, 3),
+                'predicted_score': predicted_score,
+                'over_under': over_under,
+                'btts': btts,
+                'probabilities': {
+                    'home_win': round(home_win, 3),
+                    'draw': round(draw, 3),
+                    'away_win': round(away_win, 3)
+                },
+                'available_models': list(model_results.keys())
+            }
+            
+        except Exception as e:
+            logger.error(f"Erreur génération prédiction: {e}")
+            return {
+                'recommendation': "ANALYSE INCOMPLETE",
+                'bet_type': "",
+                'emoji': "⚠️",
+                'confidence': 0.3,
+                'predicted_score': "1-1",
+                'over_under': "N/A",
+                'btts': "N/A",
+                'probabilities': {'home_win': 0.33, 'draw': 0.34, 'away_win': 0.33}
+            }
 
-# ==================== OPTIMIZED TELEGRAM BOT ====================
-class OptimizedTelegramBot:
-    """Telegram bot optimized to avoid 400 errors with HTML mode[citation:2]"""
+# ==================== SELECTEUR DE PRÉDICTIONS ====================
+
+class PredictionsSelector:
+    """Sélectionne les 5 meilleures prédictions"""
+    
+    def __init__(self):
+        self.min_confidence = Config.MIN_CONFIDENCE
+        self.min_data_quality = 0.5  # Qualité minimale des données
+    
+    def select_best(self, analyses, limit=5):
+        """Sélectionne les meilleures analyses basées sur la confiance et la qualité des données"""
+        if not analyses:
+            return []
+        
+        # Filtrer par confiance minimale et qualité
+        valid = []
+        for analysis in analyses:
+            if analysis and analysis['confidence'] >= self.min_confidence:
+                # Évaluer la qualité des données
+                data_quality = self._evaluate_data_quality(analysis)
+                if data_quality >= self.min_data_quality:
+                    analysis['data_quality'] = data_quality
+                    valid.append(analysis)
+        
+        if not valid:
+            return []
+        
+        # Trier par confiance * qualité des données
+        valid.sort(key=lambda x: x['confidence'] * x['data_quality'], reverse=True)
+        
+        return valid[:limit]
+    
+    def _evaluate_data_quality(self, analysis):
+        """Évalue la qualité des données disponibles"""
+        try:
+            details = analysis.get('model_details', {})
+            available = analysis.get('available_models', [])
+            
+            score = 0
+            max_score = 0
+            
+            # Points pour chaque modèle disponible
+            model_weights = {
+                'statistical': 30,
+                'poisson': 25,
+                'form': 20,
+                'h2h': 15,
+                'combined': 10
+            }
+            
+            for model in available:
+                if model in model_weights:
+                    score += model_weights[model]
+                    max_score += model_weights[model]
+            
+            # Bonus pour la profondeur des données historiques
+            if 'statistical' in details:
+                stats = details['statistical']
+                if stats.get('expected_home_goals', 0) > 0 and stats.get('expected_away_goals', 0) > 0:
+                    score += 10
+                    max_score += 10
+            
+            return score / max_score if max_score > 0 else 0
+            
+        except:
+            return 0.5
+    
+    def generate_report(self, predictions):
+        """Génère un rapport d'analyse"""
+        if not predictions:
+            return {
+                'total': 0,
+                'avg_confidence': 0,
+                'avg_data_quality': 0,
+                'risk': 'TRÈS ÉLEVÉ',
+                'quality': 'FAIBLE',
+                'bet_types': {},
+                'leagues': {}
+            }
+        
+        confidences = [p['confidence'] for p in predictions]
+        qualities = [p.get('data_quality', 0.5) for p in predictions]
+        
+        avg_conf = sum(confidences) / len(confidences)
+        avg_quality = sum(qualities) / len(qualities)
+        
+        # Niveau de risque
+        if avg_conf >= 0.70 and avg_quality >= 0.70:
+            risk = 'FAIBLE'
+        elif avg_conf >= 0.60 and avg_quality >= 0.60:
+            risk = 'MOYEN'
+        elif avg_conf >= 0.50:
+            risk = 'ÉLEVÉ'
+        else:
+            risk = 'TRÈS ÉLEVÉ'
+        
+        # Qualité globale
+        overall_quality = (avg_conf + avg_quality) / 2
+        if overall_quality >= 0.70:
+            quality_label = 'EXCELLENTE'
+        elif overall_quality >= 0.60:
+            quality_label = 'BONNE'
+        elif overall_quality >= 0.50:
+            quality_label = 'MOYENNE'
+        else:
+            quality_label = 'FAIBLE'
+        
+        # Types de paris
+        bet_types = {}
+        leagues = {}
+        
+        for pred in predictions:
+            bet_type = pred['prediction']['bet_type']
+            league = pred['league']
+            
+            bet_types[bet_type] = bet_types.get(bet_type, 0) + 1
+            leagues[league] = leagues.get(league, 0) + 1
+        
+        return {
+            'total': len(predictions),
+            'avg_confidence': round(avg_conf, 3),
+            'avg_data_quality': round(avg_quality, 3),
+            'overall_quality': round(overall_quality, 3),
+            'risk': risk,
+            'quality': quality_label,
+            'bet_types': bet_types,
+            'leagues': leagues,
+            'date': datetime.now().strftime("%d/%m/%Y %H:%M")
+        }
+
+# ==================== TELEGRAM BOT ====================
+
+class TelegramBot:
+    """Bot Telegram pour l'envoi des prédictions"""
     
     def __init__(self):
         self.token = Config.TELEGRAM_BOT_TOKEN
         self.channel = Config.TELEGRAM_CHANNEL_ID
         
         if not self.token or not self.channel:
-            raise ValueError("Telegram configuration missing")
+            raise ValueError("Configuration Telegram manquante")
     
     async def send_predictions(self, predictions, report):
-        """Sends predictions with HTML formatting and automatic splitting[citation:2]"""
+        """Envoie les prédictions sur Telegram"""
         try:
             message = self._format_html_message(predictions, report)
-            return await self._send_safe_message(message)
+            return await self._send_html_message(message)
         except Exception as e:
-            logging.error(f"Telegram error: {e}")
+            logger.error(f"Erreur Telegram: {e}")
             return False
     
     def _format_html_message(self, predictions, report):
-        """Formats message in HTML mode to avoid parsing errors[citation:2]"""
+        """Formate le message en HTML"""
         date_str = report['date']
         
-        header = f"""<b>⚽ PRONOSTICS FOOTBALL - DONNÉES RÉELLES ⚽</b>
-<b>📅 {date_str} | 🏆 {report['total']} sélections</b>
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        header = f"""
+<b>⚽️ PRONOSTICS FOOTBALL - ANALYSE MULTI-MODÈLES ⚽️</b>
+<b>📅 {date_str} | 🎯 {report['total']} sélections d'excellence</b>
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-<b>📊 RAPPORT DE CONFIDENCE</b>
+<b>📊 RAPPORT DE QUALITÉ</b>
 • Confiance moyenne: <b>{report['avg_confidence']:.1%}</b>
+• Qualité des données: <b>{report['avg_data_quality']:.1%}</b>
+• Qualité globale: <b>{report['quality']}</b>
 • Niveau de risque: <b>{report['risk']}</b>
-• Qualité: <b>{report['quality']}</b>
 
-<b>🎰 RÉPARTITION DES PARIS:</b> {', '.join([f'{k}:{v}' for k, v in report['bet_types'].items()])}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+<b>🏆 RÉPARTITION DES LIGUES:</b>
+"""
+        
+        # Ajouter les ligues
+        for league, count in report['leagues'].items():
+            header += f"• {league}: {count} match(s)\n"
+        
+        header += f"""
+<b>🎰 TYPES DE PARIS:</b> {', '.join([f'{k}:{v}' for k, v in report['bet_types'].items()])}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-<b>🏆 TOP PRONOSTICS DU JOUR 🏆</b>
+<b>🏅 TOP 5 PRONOSTICS DU JOUR 🏅</b>
 """
         
         predictions_text = ""
-        for i, pred in enumerate(predictions[:5], 1):
+        for i, pred in enumerate(predictions, 1):
             rank_emoji = ['🥇', '🥈', '🥉', '🎯', '🎯'][i-1]
             pred_data = pred['prediction']
+            quality = pred.get('data_quality', 0.5)
             
             predictions_text += f"""
 {rank_emoji} <b>{pred['home_team']} vs {pred['away_team']}</b>
-🏆 {pred['league']} | ⚡ Confiance: <b>{pred['confidence']:.1%}</b>
+🏆 {pred['league']} | ⚡ Confiance: <b>{pred['confidence']:.1%}</b> | 📈 Qualité données: <b>{quality:.1%}</b>
 
-<b>🎯 RECOMMANDATION: {pred_data['emoji']} {pred_data['type']}</b>
-• Type de pari: <b>{pred_data['bet']}</b>
-• Cote estimée: {pred_data['odds']}
-• Probabilités: 1️⃣ {pred['probabilities']['home_win']:.1%} | N {pred['probabilities']['draw']:.1%} | 2️⃣ {pred['probabilities']['away_win']:.1%}
+<b>🎯 RECOMMANDATION: {pred_data['emoji']} {pred_data['recommendation']}</b>
+• Type de pari: <b>{pred_data['bet_type']}</b>
+• Score probable: <b>{pred_data['predicted_score']}</b>
+• Over/Under 2.5: <b>{pred_data['over_under']}</b>
+• BTTS: <b>{pred_data['btts']}</b>
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+<b>📊 PROBABILITÉS DÉTAILLÉES:</b>
+1️⃣ {pred_data['probabilities']['home_win']:.1%} | N {pred_data['probabilities']['draw']:.1%} | 2️⃣ {pred_data['probabilities']['away_win']:.1%}
+
+<b>🧮 MODÈLES UTILISÉS:</b> {', '.join(pred.get('available_models', ['Statistique']))}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
         
-        footer = """
-<b>⚠️ INFORMATIONS IMPORTANTES</b>
-• Données réelles ESPN • Analyse algorithmique
-• Aucun gain garanti • Jouez responsablement
-• Vérifiez les cotes avant de parier
+        footer = f"""
+<b>🔧 SYSTÈME D'ANALYSE</b>
+• {len(predictions[0].get('available_models', []))} modèles mathématiques combinés
+• Données temps réel OpenLigaDB
+• Filtrage qualité des données
 
-<b>⚙️ SYSTÈME:</b> Football Predictor Pro v2.0
-<b>📡 SOURCE:</b> Données ESPN réelles
-<b>🔄 PROCHAIN:</b> Analyse quotidienne automatique
+<b>⚠️ AVERTISSEMENT IMPORTANT</b>
+• Ces pronostics sont basés sur une analyse algorithmique avancée
+• Aucun gain n'est garanti - jouez de manière responsable
+• Les cotes peuvent varier - vérifiez avant de parier
+
+<b>🔄 PROCHAINE ANALYSE:</b> {Config.DAILY_TIME} {Config.TIMEZONE}
+<b>🤖 SYSTÈME:</b> Football Predictor Pro v2.0
 """
         
-        return f"{header}\n{predictions_text}\n{footer}"
+        full_message = f"{header}\n{predictions_text}\n{footer}"
+        
+        # Limiter la taille si nécessaire
+        if len(full_message) > 4000:
+            full_message = full_message[:3900] + "\n\n... (message tronqué pour respecter les limites Telegram)"
+        
+        return full_message
     
-    async def _send_safe_message(self, text):
-        """Safely sends message with HTML parsing and automatic splitting[citation:1][citation:2]"""
-        # Split message if too long (4000 chars with HTML tag safety)[citation:1]
-        parts = self._split_html_message(text, max_len=4000)
-        
-        success = True
-        for part in parts:
-            if not await self._send_message_part(part):
-                success = False
-            await asyncio.sleep(0.5)  # Rate limiting
-        
-        return success
-    
-    def _split_html_message(self, text, max_len=4000):
-        """Splits HTML message ensuring tags aren't broken[citation:1]"""
-        if len(text) <= max_len:
-            return [text]
-        
-        parts = []
-        while text:
-            # Find safe split point
-            if len(text) <= max_len:
-                parts.append(text)
-                break
-            
-            # Try to split at line break
-            split_point = text.rfind('\n', 0, max_len)
-            if split_point == -1:
-                # Try to split at sentence end
-                split_point = text.rfind('. ', 0, max_len)
-                if split_point == -1:
-                    # Force split at max_len
-                    split_point = max_len
-            
-            part = text[:split_point].strip()
-            if part:
-                parts.append(part)
-            text = text[split_point:].strip()
-        
-        return parts
-    
-    async def _send_message_part(self, text):
-        """Sends a single message part using HTML parse_mode[citation:2]"""
-        url = f"https://api.telegram.org/bot{self.token}/sendMessage"
-        payload = {
-            'chat_id': self.channel,
-            'text': text,
-            'parse_mode': 'HTML',  # Using HTML instead of Markdown[citation:2]
-            'disable_web_page_preview': True
-        }
-        
+    async def _send_html_message(self, text):
+        """Envoie un message HTML sur Telegram"""
         try:
+            url = f"https://api.telegram.org/bot{self.token}/sendMessage"
+            payload = {
+                'chat_id': self.channel,
+                'text': text,
+                'parse_mode': 'HTML',
+                'disable_web_page_preview': True,
+                'disable_notification': False
+            }
+            
             async with aiohttp.ClientSession() as session:
                 async with session.post(url, json=payload, timeout=30) as resp:
                     if resp.status == 200:
-                        logging.info("✅ Message part sent successfully")
+                        logger.info("✅ Message Telegram envoyé avec succès")
                         return True
                     else:
                         error_text = await resp.text()
-                        logging.error(f"❌ Telegram error {resp.status}: {error_text}")
+                        logger.error(f"❌ Erreur Telegram {resp.status}: {error_text}")
                         return False
+                        
         except Exception as e:
-            logging.error(f"❌ Telegram exception: {e}")
+            logger.error(f"❌ Exception Telegram: {e}")
+            return False
+    
+    async def send_test_message(self):
+        """Envoie un message de test"""
+        try:
+            message = f"""
+<b>🤖 Football Predictor Bot v2.0 🤖</b>
+
+✅ Système opérationnel avec {len(Config.LEAGUES_MAPPING)} ligues
+🧮 Modèles activés: {sum(Config.ENABLED_MODELS.values())}/10
+📡 Source: API OpenLigaDB
+📍 Fuseau: {Config.TIMEZONE}
+🔄 Prochaine analyse: {Config.DAILY_TIME}
+
+<i>Initialisation réussie - prêt pour l'analyse quotidienne</i>
+"""
+            
+            url = f"https://api.telegram.org/bot{self.token}/sendMessage"
+            payload = {
+                'chat_id': self.channel,
+                'text': message,
+                'parse_mode': 'HTML'
+            }
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=payload, timeout=10) as resp:
+                    return resp.status == 200
+                    
+        except Exception as e:
+            logger.error(f"Erreur test Telegram: {e}")
             return False
 
-# ==================== MAIN SYSTEM ====================
+# ==================== SYSTÈME PRINCIPAL ====================
+
 class FootballPredictionSystem:
-    """Main system optimized for Railway deployment"""
+    """Système principal de prédictions football"""
     
     def __init__(self):
-        self.collector = None
-        self.analyzer = RealDataAnalyzer()
-        self.telegram = OptimizedTelegramBot()
-        logging.info("🚀 Système Football Predictor (Données Réelles) initialisé")
+        self.db = Database()
+        self.models = PredictionModels(self.db)
+        self.selector = PredictionsSelector()
+        self.telegram = TelegramBot()
+        
+        logger.info("🚀 Système Football Predictor initialisé")
+        logger.info(f"📊 Ligues configurées: {len(Config.LEAGUES_MAPPING)}")
+        logger.info(f"🧮 Modèles activés: {sum(Config.ENABLED_MODELS.values())}")
     
     async def run_daily_analysis(self):
-        """Runs daily analysis with real data"""
-        logging.info("🔄 Démarrage analyse avec données réelles...")
+        """Exécute l'analyse quotidienne"""
+        logger.info("🔄 Démarrage de l'analyse quotidienne...")
         
         try:
-            async with ESPNRealDataCollector() as collector:
-                # Fetch upcoming matches
-                matches = await collector.fetch_upcoming_matches(days_ahead=1)
+            # 1. Collecte des matchs du jour
+            async with OpenLigaDBCollector() as collector:
+                matches = await collector.fetch_today_matches()
                 
                 if not matches:
-                    logging.warning("⚠️ Aucun match trouvé")
+                    logger.warning("⚠️ Aucun match trouvé pour aujourd'hui")
                     await self._send_no_matches()
                     return
                 
-                logging.info(f"📊 {len(matches)} matchs réels à analyser")
+                logger.info(f"📊 {len(matches)} matchs du jour à analyser")
                 
-                # Analyze each match
+                # 2. Analyse de chaque match
                 analyses = []
-                for match in matches[:8]:  # Limit to 8 matches for performance
+                analyzed_count = 0
+                
+                for match in matches:
                     try:
-                        # Get REAL statistics for both teams
-                        home_stats = await collector.fetch_team_recent_stats(
+                        # Éviter les matchs déjà terminés
+                        if match.get('is_finished', False):
+                            logger.debug(f"⏭️ Match terminé ignoré: {match['home_team']['name']} vs {match['away_team']['name']}")
+                            continue
+                        
+                        # Récupérer l'historique des équipes
+                        home_history = await collector.fetch_team_history(
                             match['home_team']['id'],
-                            match['league_code']
+                            match['home_team']['name'],
+                            match['league_code'],
+                            Config.LEAGUES_MAPPING[match['league']]['season'],
+                            8
                         )
                         
-                        away_stats = await collector.fetch_team_recent_stats(
+                        away_history = await collector.fetch_team_history(
                             match['away_team']['id'],
-                            match['league_code']
+                            match['away_team']['name'],
+                            match['league_code'],
+                            Config.LEAGUES_MAPPING[match['league']]['season'],
+                            8
                         )
                         
-                        # Analyze match
-                        analysis = self.analyzer.analyze_match(match, home_stats, away_stats)
-                        if analysis and analysis['confidence'] >= Config.MIN_CONFIDENCE:
-                            analyses.append(analysis)
+                        # Récupérer les confrontations directes
+                        h2h_data = await collector.fetch_head_to_head(
+                            match['home_team']['id'],
+                            match['away_team']['id']
+                        )
                         
-                        await asyncio.sleep(0.2)  # Rate limiting
+                        # Vérifier si on a assez de données
+                        if len(home_history) < 3 or len(away_history) < 3:
+                            logger.debug(f"📉 Données insuffisantes pour {match['home_team']['name']} vs {match['away_team']['name']}")
+                            continue
+                        
+                        # Analyser le match
+                        analysis = self.models.analyze_match(match, home_history, away_history, h2h_data)
+                        
+                        if analysis:
+                            analyses.append(analysis)
+                            analyzed_count += 1
+                            
+                            # Sauvegarder les données pour usage futur
+                            self.db.save_match_data(match['raw_data'])
+                        
+                        await asyncio.sleep(0.5)  # Respect rate limit
                         
                     except Exception as e:
-                        logging.error(f"Erreur analyse match: {e}")
+                        logger.error(f"Erreur analyse match {match['home_team']['name']} vs {match['away_team']['name']}: {e}")
                         continue
                 
+                logger.info(f"✅ {analyzed_count} matchs analysés avec succès")
+                
                 if not analyses:
-                    logging.warning("⚠️ Aucune prédiction valide")
-                    await self._send_no_predictions()
+                    logger.warning("⚠️ Aucune analyse valide générée")
+                    await self._send_no_valid_predictions()
                     return
                 
-                # Sort by confidence
-                analyses.sort(key=lambda x: x['confidence'], reverse=True)
-                top_predictions = analyses[:5]
+                # 3. Sélection des meilleures prédictions
+                top_predictions = self.selector.select_best(analyses, 5)
                 
-                # Generate report
-                report = self._generate_report(top_predictions)
+                if not top_predictions:
+                    logger.warning("⚠️ Aucune prédiction ne remplit les critères de qualité")
+                    await self._send_no_quality_predictions()
+                    return
                 
-                # Send to Telegram
-                logging.info("📤 Envoi vers Telegram...")
+                # 4. Génération du rapport
+                report = self.selector.generate_report(top_predictions)
+                
+                # 5. Envoi sur Telegram
+                logger.info("📤 Envoi des prédictions vers Telegram...")
                 success = await self.telegram.send_predictions(top_predictions, report)
                 
                 if success:
-                    logging.info("✅ Analyse terminée avec succès")
+                    logger.info("✅ Analyse terminée et envoyée avec succès")
+                    
+                    # Sauvegarde des prédictions
+                    for pred in top_predictions:
+                        pred_to_save = {
+                            'match_id': pred['match_id'],
+                            'league': pred['league'],
+                            'home_team': pred['home_team'],
+                            'away_team': pred['away_team'],
+                            'match_date': pred['date'],
+                            'confidence': pred['confidence'],
+                            'predicted_score': pred['prediction']['predicted_score'],
+                            'bet_type': pred['prediction']['bet_type'],
+                            'details': pred
+                        }
+                        self.db.save_prediction(pred_to_save)
+                        
+                    logger.info(f"💾 {len(top_predictions)} prédictions sauvegardées")
                 else:
-                    logging.error("❌ Échec envoi Telegram")
+                    logger.error("❌ Échec de l'envoi Telegram")
                 
         except Exception as e:
-            logging.error(f"❌ Erreur système: {e}", exc_info=True)
-    
-    def _generate_report(self, predictions):
-        """Generates analysis report"""
-        confidences = [p['confidence'] for p in predictions]
-        avg_conf = sum(confidences) / len(confidences) if confidences else 0
-        
-        # Risk level
-        if avg_conf >= 0.75:
-            risk = 'FAIBLE'
-        elif avg_conf >= 0.65:
-            risk = 'MOYEN'
-        else:
-            risk = 'ÉLEVÉ'
-        
-        # Quality
-        if len(predictions) >= 4:
-            quality = 'EXCELLENTE'
-        elif len(predictions) >= 2:
-            quality = 'BONNE'
-        else:
-            quality = 'MOYENNE'
-        
-        # Bet types distribution
-        bet_types = {}
-        for pred in predictions:
-            bet_type = pred['prediction']['bet']
-            bet_types[bet_type] = bet_types.get(bet_type, 0) + 1
-        
-        return {
-            'total': len(predictions),
-            'avg_confidence': avg_conf,
-            'risk': risk,
-            'quality': quality,
-            'bet_types': bet_types,
-            'date': datetime.now().strftime("%d/%m/%Y %H:%M")
-        }
+            logger.error(f"❌ Erreur système: {e}", exc_info=True)
     
     async def _send_no_matches(self):
-        """Sends no matches message"""
+        """Message quand aucun match n'est trouvé"""
         try:
-            message = """<b>📭 AUCUN MATCH AUJOURD'HUI</b>
+            message = f"""
+<b>📭 AUCUN MATCH PROGRAMMÉ AUJOURD'HUI</b>
 
-Pas de match programmé pour demain.
-🔄 Prochaine analyse automatique: 07:00 UTC
+Pas de match trouvé dans les {len(Config.LEAGUES_MAPPING)} ligues surveillées.
+Cela peut être dû à:
+• Une journée sans match
+• Problème temporaire d'API
+• Saison terminée
 
-<b>⚙️ STATUT:</b> Système opérationnel"""
-            await self.telegram._send_message_part(message)
+🔄 Prochaine analyse: {Config.DAILY_TIME} {Config.TIMEZONE}
+"""
+            await self.telegram._send_html_message(message)
         except:
             pass
     
-    async def _send_no_predictions(self):
-        """Sends no predictions message"""
+    async def _send_no_valid_predictions(self):
+        """Message quand aucune prédiction valide"""
         try:
-            message = """<b>⚠️ AUCUN PRONOSTIC VALIDE</b>
+            message = f"""
+<b>⚠️ ANALYSE INCOMPLÈTE</b>
 
-Aucun match ne remplit les critères de confiance minimale.
-🔄 Prochaine analyse: 07:00 UTC
+Des matchs étaient programmés mais l'analyse n'a pas pu générer de prédictions valides.
+Causes possibles:
+• Données historiques insuffisantes
+• Problème de connexion aux APIs
+• Matchs très récents sans statistiques
 
-<b>⚙️ STATUT:</b> Filtrage actif - qualité avant quantité"""
-            await self.telegram._send_message_part(message)
+🔄 Prochaine analyse: {Config.DAILY_TIME} {Config.TIMEZONE}
+"""
+            await self.telegram._send_html_message(message)
+        except:
+            pass
+    
+    async def _send_no_quality_predictions(self):
+        """Message quand aucune prédiction de qualité"""
+        try:
+            message = f"""
+<b>🎯 CRITÈRES DE QUALITÉ NON ATTEINTS</b>
+
+Des analyses ont été effectuées mais aucune ne remplit les critères de qualité minimum.
+Seuils configurés:
+• Confiance minimum: {Config.MIN_CONFIDENCE*100}%
+• Qualité données minimum: 50%
+
+Aucun pronostic n'est émis pour garantir la fiabilité.
+
+🔄 Prochaine analyse: {Config.DAILY_TIME} {Config.TIMEZONE}
+"""
+            await self.telegram._send_html_message(message)
         except:
             pass
 
-# ==================== RAILWAY SCHEDULER ====================
-class RailwayScheduler:
-    """Scheduler optimized for Railway deployment[citation:3]"""
+# ==================== SCHEDULER ====================
+
+class Scheduler:
+    """Planificateur pour exécutions régulières"""
     
     def __init__(self):
         self.scheduler = None
         self.system = FootballPredictionSystem()
         self.running = True
         
-        # Signal handling
+        # Gestion des signaux
+        import signal
         signal.signal(signal.SIGINT, self.shutdown)
         signal.signal(signal.SIGTERM, self.shutdown)
     
     async def start(self):
-        """Starts the scheduler"""
-        logging.info("⏰ Planificateur Railway démarré")
-        logging.info(f"📍 Fuseau: {Config.TIMEZONE}")
-        logging.info(f"⏰ Heure quotidienne: {Config.DAILY_TIME}")
+        """Démarre le planificateur"""
+        logger.info("⏰ Planificateur démarré")
+        logger.info(f"📍 Fuseau horaire: {Config.TIMEZONE}")
+        logger.info(f"⏰ Heure quotidienne: {Config.DAILY_TIME}")
         
-        # Parse schedule time
+        # Mode test
+        if '--test' in sys.argv:
+            logger.info("🧪 Mode test - exécution immédiate")
+            await self._daily_task(test_mode=True)
+            return
+        
+        # Mode manuel
+        if '--manual' in sys.argv:
+            logger.info("👨‍💻 Mode manuel - exécution unique")
+            await self._daily_task()
+            return
+        
+        # Mode normal - démarrer le scheduler
+        self.scheduler = AsyncIOScheduler(timezone=Config.TIMEZONE)
+        
+        # Parser l'heure d'exécution
         try:
             hour, minute = map(int, Config.DAILY_TIME.split(':'))
         except:
             hour, minute = 7, 0
         
-        # Setup scheduler
-        self.scheduler = AsyncIOScheduler(timezone=Config.TIMEZONE)
-        
+        # Planifier la tâche quotidienne
         self.scheduler.add_job(
             self._daily_task,
             CronTrigger(hour=hour, minute=minute, timezone=Config.TIMEZONE),
             id='daily_analysis',
-            name='Analyse football quotidienne (données réelles)'
+            name='Analyse football quotidienne',
+            misfire_grace_time=300
         )
         
-        # Also schedule a test run immediately if in test mode
-        if '--test' in sys.argv:
-            logging.info("🧪 Mode test - exécution immédiate")
-            await self._daily_task(test_mode=True)
-            return
+        # Optionnel: exécution toutes les 6 heures pour tests
+        if '--frequent' in sys.argv:
+            self.scheduler.add_job(
+                self._daily_task,
+                'interval',
+                hours=6,
+                id='frequent_analysis',
+                name='Analyse fréquente'
+            )
         
         self.scheduler.start()
         
-        # Keep the app running
+        # Envoyer un message de démarrage
+        try:
+            await self.system.telegram.send_test_message()
+        except:
+            pass
+        
         try:
             while self.running:
                 await asyncio.sleep(1)
@@ -626,83 +1502,132 @@ class RailwayScheduler:
             self.shutdown()
     
     async def _daily_task(self, test_mode=False):
-        """Daily analysis task"""
-        logging.info("🔄 Exécution tâche quotidienne...")
+        """Tâche d'analyse quotidienne"""
+        logger.info("🔄 Exécution de la tâche d'analyse...")
         await self.system.run_daily_analysis()
-        logging.info("✅ Tâche terminée")
+        logger.info("✅ Tâche d'analyse terminée")
     
     def shutdown(self, signum=None, frame=None):
-        """Graceful shutdown"""
-        logging.info("🛑 Arrêt du planificateur...")
+        """Arrêt propre du système"""
+        logger.info("🛑 Arrêt du planificateur...")
         self.running = False
         
         if self.scheduler:
             self.scheduler.shutdown(wait=False)
         
-        logging.info("✅ Planificateur arrêté")
+        self.system.db.close()
+        logger.info("✅ Planificateur arrêté proprement")
         sys.exit(0)
 
-# ==================== DEPLOYMENT FILES ====================
-"""
-File structure for Railway deployment[citation:3][citation:6]:
+# ==================== FICHIER REQUIREMENTS.TXT ====================
 
-1. requirements.txt
-Flask==2.3.3
-aiohttp==3.8.5
+"""
+# requirements.txt
+aiohttp==3.9.1
 apscheduler==3.10.4
-gunicorn==21.2.0
-
-2. Procfile
-web: gunicorn main:app
-worker: python bot.py
-
-3. nixpacks.toml
-[phases.setup]
-cmds = ["pip install -r requirements.txt"]
-
-[start]
-cmd = "python bot.py"
-
-4. railway.toml (optional)
-[build]
-builder = "nixpacks"
-
-[deploy]
-startCommand = "python bot.py"
+python-telegram-bot==20.6
+pytz==2023.3
+sqlite3
 """
 
-# ==================== MAIN ENTRY ====================
+# ==================== FICHIER railway.json ====================
+
+"""
+{
+  "build": {
+    "builder": "NIXPACKS"
+  },
+  "deploy": {
+    "startCommand": "python bot.py",
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 10
+  }
+}
+"""
+
+# ==================== INSTRUCTIONS DE DÉPLOIEMENT ====================
+
+"""
+INSTRUCTIONS POUR DÉPLOIEMENT SUR RAILWAY:
+
+1. Créer un nouveau projet sur Railway.app
+2. Ajouter les variables d'environnement:
+   - TELEGRAM_BOT_TOKEN=votre_token
+   - TELEGRAM_CHANNEL_ID=votre_channel_id
+   - TIMEZONE=Europe/Paris
+   - DAILY_TIME=07:00
+   - MIN_CONFIDENCE=0.65
+   - LOG_LEVEL=INFO
+
+3. Copier les fichiers:
+   - bot.py (ce fichier)
+   - requirements.txt
+   - railway.json
+
+4. Déployer sur Railway
+
+FONCTIONNALITÉS:
+- Récupère les matchs du jour via OpenLigaDB
+- Utilise 4-5 modèles de calcul selon données disponibles
+- Sélectionne les 5 meilleures prédictions
+- Envoie sur Telegram avec format HTML
+- Tourne 24h/24 avec analyse quotidienne
+"""
+
+# ==================== POINT D'ENTRÉE ====================
+
 def main():
-    """Main entry point"""
+    """Point d'entrée principal"""
     
-    # Setup logging
-    logging.basicConfig(
-        level=getattr(logging, Config.LOG_LEVEL),
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[logging.StreamHandler()]
-    )
+    if '--help' in sys.argv:
+        print("""
+🚀 Football Prediction Bot - OpenLigaDB Edition
+
+Usage:
+  python bot.py              # Mode normal (démarre le scheduler)
+  python bot.py --test       # Mode test (exécution immédiate)
+  python bot.py --manual     # Mode manuel (une exécution)
+  python bot.py --frequent   # Mode avec exécutions fréquentes
+  python bot.py --help       # Affiche cette aide
+
+Variables d'environnement Railway:
+  • TELEGRAM_BOT_TOKEN      (requis) - Token du bot Telegram
+  • TELEGRAM_CHANNEL_ID     (requis) - ID du canal Telegram
+  • TIMEZONE                (optionnel, défaut: Europe/Paris)
+  • DAILY_TIME              (optionnel, défaut: 07:00)
+  • MIN_CONFIDENCE          (optionnel, défaut: 0.65)
+  • LOG_LEVEL               (optionnel, défaut: INFO)
+
+Fonctionnalités:
+  • Surveillance de 20+ ligues
+  • 10 modèles de calcul (4-5 activés selon données)
+  • Sélection des 5 meilleures prédictions
+  • Analyse de la qualité des données
+  • Format HTML pour Telegram
+  • Base de données SQLite locale
+        """)
+        return
     
-    # Validate configuration
-    errors = []
-    if not Config.TELEGRAM_BOT_TOKEN:
-        errors.append("TELEGRAM_BOT_TOKEN manquant")
-    if not Config.TELEGRAM_CHANNEL_ID:
-        errors.append("TELEGRAM_CHANNEL_ID manquant")
-    
+    # Validation de la configuration
+    errors = Config.validate()
     if errors:
         print("❌ ERREURS DE CONFIGURATION:")
         for error in errors:
             print(f"  - {error}")
-        print("\n🔧 Configuration requise dans Railway:")
-        print("  TELEGRAM_BOT_TOKEN=your_bot_token:xxxx")
-        print("  TELEGRAM_CHANNEL_ID=@your_channel")
-        print("  TIMEZONE=Europe/Paris (optionnel)")
-        print("  DAILY_TIME=07:00 (optionnel)")
+        print("\n🔧 Configurez les variables sur Railway:")
+        print("   TELEGRAM_BOT_TOKEN et TELEGRAM_CHANNEL_ID")
         return
     
-    # Start the system
-    scheduler = RailwayScheduler()
-    asyncio.run(scheduler.start())
+    # Démarrer le système
+    scheduler = Scheduler()
+    
+    try:
+        asyncio.run(scheduler.start())
+    except KeyboardInterrupt:
+        scheduler.shutdown()
+    except Exception as e:
+        logger.error(f"Erreur critique: {e}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
