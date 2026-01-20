@@ -1,5 +1,12 @@
-aiohttp==3.10.0
-APScheduler==3.10.0
-python-telegram-bot==20.7
-pytz==2024.1
+aiohttp
 apscheduler
+python-dateutil
+statistics
+sqlite3
+logging
+os
+sys
+datetime
+typing
+asyncio
+signal
