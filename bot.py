@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-FOOTBALL PREDICTION BOT - VERSION CORRIGÉE
-API ESPN avec corrections complètes
+FOOTBALL PREDICTION BOT - VERSION FINALE
+API ESPN avec corrections Telegram
 """
 
 import os
@@ -53,7 +53,6 @@ class Config:
         "ligue_1": {"code": "fra.1", "name": "Ligue 1"},
         "champions_league": {"code": "uefa.champions", "name": "UEFA Champions League"},
         "europa_league": {"code": "uefa.europa", "name": "UEFA Europa League"},
-        "europa_conference": {"code": "uefa.europa_conference", "name": "UEFA Conference League"},
     }
     
     # Configuration améliorée du modèle
@@ -81,20 +80,16 @@ logger = logging.getLogger(__name__)
 # ==================== DATABASE ====================
 
 class Database:
-    """Base de données SQLite avec correction du schéma"""
+    """Base de données SQLite"""
     
     def __init__(self):
         self.conn = sqlite3.connect('predictions.db', check_same_thread=False)
         self.init_db()
     
     def init_db(self):
-        """Initialise la base de données avec le bon schéma"""
+        """Initialise la base de données"""
         cursor = self.conn.cursor()
         
-        # Supprimer l'ancienne table si elle existe
-        cursor.execute('DROP TABLE IF EXISTS predictions')
-        
-        # Créer la nouvelle table avec la colonne bet_type
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS predictions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -165,12 +160,13 @@ class Database:
 # ==================== ESPN COLLECTOR ====================
 
 class ESPNCollector:
-    """Collecteur ESPN amélioré avec gestion d'erreurs"""
+    """Collecteur ESPN amélioré"""
     
     def __init__(self):
         self.session = None
         self.headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'application/json'
         }
     
     async def __aenter__(self):
@@ -206,10 +202,12 @@ class ESPNCollector:
                         if matches:
                             logger.info(f"✅ {league_info['name']}: {len(matches)} match(s)")
                             all_matches.extend(matches)
-                    elif response.status != 404:
+                    elif response.status == 400:
+                        logger.debug(f"📭 {league_info['name']}: Pas de matchs (HTTP 400)")
+                    else:
                         logger.warning(f"⚠️ {league_info['name']}: HTTP {response.status}")
                 
-                await asyncio.sleep(0.3)
+                await asyncio.sleep(0.5)
                 
             except asyncio.TimeoutError:
                 logger.error(f"⏱️ Timeout pour {league_info['name']}")
@@ -230,13 +228,7 @@ class ESPNCollector:
         
         for event in data['events']:
             try:
-                status = event.get('status', {})
-                status_type = status.get('type', {})
-                
-                # Ignorer les matchs terminés (id=3) ou en cours (id=2)
-                if status_type.get('id') in ['3', '2']:
-                    continue
-                
+                # Extraire les équipes
                 competitions = event.get('competitions', [{}])[0]
                 competitors = competitions.get('competitors', [])
                 
@@ -245,16 +237,12 @@ class ESPNCollector:
                 
                 home_team = None
                 away_team = None
-                home_id = ''
-                away_id = ''
                 
                 for competitor in competitors:
                     if competitor.get('homeAway') == 'home':
                         home_team = competitor.get('team', {})
-                        home_id = home_team.get('id', '')
                     elif competitor.get('homeAway') == 'away':
                         away_team = competitor.get('team', {})
-                        away_id = away_team.get('id', '')
                 
                 if not home_team or not away_team:
                     continue
@@ -264,14 +252,14 @@ class ESPNCollector:
                     'league': league_name,
                     'date': event.get('date', ''),
                     'home_team': {
-                        'id': home_id,
-                        'name': home_team.get('displayName', 'Équipe Domicile'),
-                        'short': home_team.get('abbreviation', 'HOME')
+                        'id': home_team.get('id', ''),
+                        'name': home_team.get('displayName', ''),
+                        'short': home_team.get('abbreviation', '')
                     },
                     'away_team': {
-                        'id': away_id,
-                        'name': away_team.get('displayName', 'Équipe Extérieur'),
-                        'short': away_team.get('abbreviation', 'AWAY')
+                        'id': away_team.get('id', ''),
+                        'name': away_team.get('displayName', ''),
+                        'short': away_team.get('abbreviation', '')
                     }
                 }
                 
@@ -284,61 +272,68 @@ class ESPNCollector:
         return matches
     
     async def fetch_team_history(self, team_id, team_name, limit=10):
-        """Récupère l'historique d'une équipe"""
+        """Récupère l'historique d'une équipe (simulé)"""
         try:
-            return self._generate_mock_history(team_name, limit)
+            return self._generate_realistic_history(team_name, limit)
         except Exception as e:
             logger.error(f"Erreur historique {team_name}: {e}")
             return []
     
-    def _generate_mock_history(self, team_name, limit):
-        """Génère un historique simulé"""
+    def _generate_realistic_history(self, team_name, limit):
+        """Génère un historique réaliste"""
         matches = []
         
-        teams = [
-            "Real Madrid", "Barcelona", "Bayern Munich", "Manchester City", 
-            "PSG", "Liverpool", "Juventus", "AC Milan", "Inter", "Chelsea",
-            "Arsenal", "Manchester United", "Tottenham", "Atlético Madrid",
-            "Borussia Dortmund", "Napoli", "Ajax", "Benfica", "Porto", "Lyon"
-        ]
+        # Déterminer si c'est une équipe forte
+        top_teams = ["Real Madrid", "Barcelona", "Bayern Munich", "Manchester City", 
+                    "Liverpool", "PSG", "Juventus", "Chelsea", "Arsenal"]
         
-        # Équipe actuelle forte ou faible
-        is_top_team = any(top in team_name for top in ["Real", "Barca", "Bayern", "City", "Liverpool", "PSG"])
+        is_top_team = any(top in team_name for top in top_teams)
         
         for i in range(limit):
-            opponent = random.choice([t for t in teams if t != team_name])
-            
-            # Déterminer le résultat basé sur la force de l'équipe
+            # Générer un score réaliste
             if is_top_team:
-                if random.random() > 0.3:
+                # Équipe forte: plus de victoires
+                if random.random() > 0.4:
+                    # Victoire
                     team_score = random.randint(1, 4)
-                    opp_score = random.randint(0, min(2, team_score - 1))
+                    opp_score = random.randint(0, team_score - 1)
                     result = 'WIN'
-                elif random.random() > 0.5:
+                elif random.random() > 0.3:
+                    # Match nul
                     team_score = random.randint(0, 2)
                     opp_score = team_score
                     result = 'DRAW'
                 else:
+                    # Défaite
                     opp_score = random.randint(1, 3)
                     team_score = random.randint(0, opp_score - 1)
                     result = 'LOSS'
             else:
+                # Équipe moyenne
                 if random.random() > 0.5:
+                    # Match serré
                     team_score = random.randint(0, 2)
                     opp_score = random.randint(0, 2)
-                    result = 'DRAW'
-                elif random.random() > 0.3:
-                    team_score = random.randint(1, 3)
-                    opp_score = random.randint(0, team_score - 1)
-                    result = 'WIN'
+                    if team_score > opp_score:
+                        result = 'WIN'
+                    elif team_score < opp_score:
+                        result = 'LOSS'
+                    else:
+                        result = 'DRAW'
                 else:
-                    opp_score = random.randint(1, 4)
-                    team_score = random.randint(0, opp_score - 1)
-                    result = 'LOSS'
+                    # Résultat varié
+                    if random.random() > 0.4:
+                        team_score = random.randint(1, 3)
+                        opp_score = random.randint(0, 2)
+                        result = 'WIN' if team_score > opp_score else 'DRAW'
+                    else:
+                        opp_score = random.randint(1, 3)
+                        team_score = random.randint(0, 2)
+                        result = 'LOSS' if opp_score > team_score else 'DRAW'
             
             match_info = {
                 'date': (datetime.now() - timedelta(days=(limit - i) * 7)).isoformat(),
-                'opponent': opponent,
+                'opponent': f"Opponent {i+1}",
                 'score_team': team_score,
                 'score_opponent': opp_score,
                 'result': result,
@@ -349,69 +344,61 @@ class ESPNCollector:
         
         return matches
 
-# ==================== ANALYSEUR AMÉLIORÉ ====================
+# ==================== ANALYSEUR ====================
 
-class EnhancedAnalyzer:
-    """Analyseur amélioré avec logique de prédiction plus sophistiquée"""
+class MatchAnalyzer:
+    """Analyseur de matchs simplifié mais efficace"""
     
     def __init__(self):
         self.config = Config.MODEL_CONFIG
         
-        self.team_strength = {
-            "Real Madrid": 90, "Barcelona": 88, "Bayern Munich": 92,
-            "Manchester City": 93, "PSG": 87, "Liverpool": 89,
-            "Juventus": 85, "AC Milan": 82, "Inter": 84, "Chelsea": 83,
-            "Arsenal": 86, "Manchester United": 81, "Tottenham": 80,
-            "Atlético Madrid": 84, "Borussia Dortmund": 83, "Napoli": 82,
-            "Ajax": 78, "Benfica": 77, "Porto": 76, "Lyon": 75,
-            "Équipe Domicile": 75, "Équipe Extérieur": 75
+        # Tableau de force des équipes connues
+        self.team_ratings = {
+            "Real Madrid": 90, "Barcelona": 88, "Bayern": 92, "Munich": 92,
+            "Manchester City": 93, "Liverpool": 89, "PSG": 87, "Juventus": 85,
+            "Chelsea": 83, "Arsenal": 86, "Manchester United": 82, "Tottenham": 80,
+            "Atlético": 84, "Dortmund": 83, "Inter": 84, "Milan": 82, "Napoli": 81,
+            "Ajax": 78, "Benfica": 77, "Porto": 76, "Lyon": 75, "Sevilla": 79,
+            "Valencia": 76, "Atalanta": 80, "Roma": 81, "Lazio": 80
         }
     
     def analyze(self, match_data, home_history, away_history):
-        """Analyse un match avec logique améliorée"""
+        """Analyse un match"""
         try:
             home_team = match_data['home_team']['name']
             away_team = match_data['away_team']['name']
             
-            logger.debug(f"🔍 Analyse: {home_team} vs {away_team}")
-            
-            # 1. Force de base des équipes
-            home_strength = self._get_team_strength(home_team)
-            away_strength = self._get_team_strength(away_team)
+            # 1. Ratings des équipes
+            home_rating = self._get_team_rating(home_team)
+            away_rating = self._get_team_rating(away_team)
             
             # 2. Forme récente
-            home_form = self._calculate_enhanced_form(home_history, home_team)
-            away_form = self._calculate_enhanced_form(away_history, away_team)
+            home_form = self._analyze_form(home_history, home_rating)
+            away_form = self._analyze_form(away_history, away_rating)
             
-            # 3. Statistiques offensives/défensives
-            home_stats = self._calculate_stats(home_history, home_team)
-            away_stats = self._calculate_stats(away_history, away_team)
+            # 3. Statistiques
+            home_stats = self._analyze_stats(home_history)
+            away_stats = self._analyze_stats(away_history)
             
             # 4. Avantage domicile
-            home_adv = self._calculate_home_advantage(home_history, home_strength)
+            home_advantage = self._calculate_home_advantage(home_history)
             
-            # 5. Analyse H2H
-            h2h_advantage = self._calculate_h2h_advantage(home_team, away_team)
-            
-            # 6. Calcul du score final
+            # 5. Score final
             final_score = self._calculate_final_score(
-                home_strength, away_strength,
+                home_rating, away_rating,
                 home_form, away_form,
                 home_stats, away_stats,
-                home_adv, h2h_advantage
+                home_advantage
             )
             
-            # 7. Confiance
+            # 6. Confiance
             confidence = self._calculate_confidence(
                 len(home_history), len(away_history),
                 home_form['consistency'], away_form['consistency']
             )
             
-            # 8. Génération des prédictions
-            predictions = self._generate_enhanced_predictions(
-                final_score, home_stats, away_stats,
-                home_strength, away_strength
-            )
+            # 7. Prédiction
+            prediction = self._generate_prediction(final_score, home_stats, away_stats)
             
             return {
                 'match_id': match_data['match_id'],
@@ -420,53 +407,39 @@ class EnhancedAnalyzer:
                 'league': match_data['league'],
                 'date': match_data['date'],
                 'confidence': confidence,
-                'home_strength': home_strength,
-                'away_strength': away_strength,
-                'home_form': home_form,
-                'away_form': away_form,
-                'home_stats': home_stats,
-                'away_stats': away_stats,
-                'home_advantage': home_adv,
-                'h2h_advantage': h2h_advantage,
-                'final_score': final_score,
-                'predictions': predictions
+                'prediction': prediction
             }
             
         except Exception as e:
             logger.error(f"Erreur analyse: {e}")
             return None
     
-    def _get_team_strength(self, team_name):
-        """Récupère la force de l'équipe"""
-        for key, value in self.team_strength.items():
+    def _get_team_rating(self, team_name):
+        """Obtient le rating d'une équipe"""
+        for key, value in self.team_ratings.items():
             if key.lower() in team_name.lower():
                 return value
         
-        if any(word in team_name.lower() for word in ['real', 'barca', 'bayern', 'city', 'psg', 'chelsea', 'arsenal']):
+        # Rating par défaut basé sur certains mots-clés
+        if any(word in team_name.lower() for word in ['real', 'barca', 'bayern', 'city', 'psg']):
             return 85
-        elif any(word in team_name.lower() for word in ['united', 'liverpool', 'tottenham', 'dortmund', 'atletico']):
+        elif any(word in team_name.lower() for word in ['united', 'chelsea', 'arsenal', 'liverpool']):
             return 80
-        elif any(word in team_name.lower() for word in ['ajax', 'benfica', 'porto', 'lyon', 'napoli', 'milan']):
+        elif any(word in team_name.lower() for word in ['tottenham', 'dortmund', 'atletico', 'inter', 'milan']):
             return 75
         else:
             return 70
     
-    def _calculate_enhanced_form(self, history, team_name):
-        """Calcule la forme avec plus de paramètres"""
+    def _analyze_form(self, history, base_rating):
+        """Analyse la forme"""
         if not history or len(history) < 3:
-            strength = self._get_team_strength(team_name)
-            return {
-                'score': strength / 100,
-                'momentum': 0.5,
-                'consistency': 0.5,
-                'label': 'DATA_INSUFFICIENT'
-            }
+            return {'score': base_rating / 100, 'consistency': 0.5, 'label': 'UNKNOWN'}
         
         recent = history[-5:] if len(history) >= 5 else history
         
+        # Points récents
         points = 0
         goals_scored = []
-        goals_conceded = []
         
         for match in recent:
             if match['result'] == 'WIN':
@@ -474,61 +447,38 @@ class EnhancedAnalyzer:
             elif match['result'] == 'DRAW':
                 points += 1
             goals_scored.append(match['score_team'])
-            goals_conceded.append(match['score_opponent'])
         
         max_points = len(recent) * 3
         form_score = points / max_points if max_points > 0 else 0.5
         
-        if len(recent) >= 3:
-            last_3 = recent[-3:]
-            momentum_points = sum([3 if m['result'] == 'WIN' else 1 if m['result'] == 'DRAW' else 0 for m in last_3])
-            momentum = momentum_points / (len(last_3) * 3)
-        else:
-            momentum = form_score
-        
+        # Consistance
         if len(goals_scored) > 1:
             consistency = 1.0 / (1.0 + statistics.stdev(goals_scored))
         else:
             consistency = 0.5
         
+        # Label
         if form_score >= 0.7:
             label = 'EXCELLENT'
         elif form_score >= 0.6:
             label = 'GOOD'
         elif form_score >= 0.4:
             label = 'AVERAGE'
-        elif form_score >= 0.3:
-            label = 'POOR'
         else:
-            label = 'VERY_POOR'
+            label = 'POOR'
         
-        return {
-            'score': form_score,
-            'momentum': momentum,
-            'consistency': consistency,
-            'label': label
-        }
+        return {'score': form_score, 'consistency': consistency, 'label': label}
     
-    def _calculate_stats(self, history, team_name):
-        """Calcule les statistiques améliorées"""
+    def _analyze_stats(self, history):
+        """Analyse les statistiques"""
         if not history:
-            strength = self._get_team_strength(team_name)
-            base = strength / 100
-            return {
-                'offense': base,
-                'defense': base,
-                'avg_scored': 1.5,
-                'avg_conceded': 1.0,
-                'clean_sheets': 0.3
-            }
+            return {'offense': 0.5, 'defense': 0.5, 'avg_scored': 1.0, 'avg_conceded': 1.0}
         
         goals_scored = [m['score_team'] for m in history]
         goals_conceded = [m['score_opponent'] for m in history]
         
         avg_scored = statistics.mean(goals_scored) if goals_scored else 0
         avg_conceded = statistics.mean(goals_conceded) if goals_conceded else 0
-        
-        clean_sheets = sum(1 for gc in goals_conceded if gc == 0) / len(history)
         
         offense = min(avg_scored / 2.5, 1.0)
         defense = 1.0 - min(avg_conceded / 2.0, 1.0)
@@ -537,274 +487,136 @@ class EnhancedAnalyzer:
             'offense': offense,
             'defense': defense,
             'avg_scored': avg_scored,
-            'avg_conceded': avg_conceded,
-            'clean_sheets': clean_sheets
+            'avg_conceded': avg_conceded
         }
     
-    def _calculate_home_advantage(self, history, base_strength):
+    def _calculate_home_advantage(self, history):
         """Calcule l'avantage domicile"""
         if not history:
-            return {'score': 0.15, 'label': 'NORMAL'}
+            return 0.1  # 10% d'avantage par défaut
         
         home_matches = [m for m in history if m.get('is_home')]
         away_matches = [m for m in history if not m.get('is_home')]
         
         if not home_matches or not away_matches:
-            return {'score': 0.15, 'label': 'NORMAL'}
+            return 0.1
         
-        home_ppg = sum([3 if m['result'] == 'WIN' else 1 if m['result'] == 'DRAW' else 0 for m in home_matches]) / len(home_matches)
-        away_ppg = sum([3 if m['result'] == 'WIN' else 1 if m['result'] == 'DRAW' else 0 for m in away_matches]) / len(away_matches)
+        home_points = sum([3 if m['result'] == 'WIN' else 1 if m['result'] == 'DRAW' else 0 for m in home_matches])
+        away_points = sum([3 if m['result'] == 'WIN' else 1 if m['result'] == 'DRAW' else 0 for m in away_matches])
+        
+        home_ppg = home_points / len(home_matches)
+        away_ppg = away_points / len(away_matches)
         
         if away_ppg > 0:
-            advantage_ratio = home_ppg / away_ppg
+            advantage = min((home_ppg / away_ppg - 1) * 0.1, 0.3)
         else:
-            advantage_ratio = 2.0
+            advantage = 0.2
         
-        score = min(advantage_ratio * 0.1, 0.3)
-        
-        if score >= 0.25:
-            label = 'VERY_STRONG'
-        elif score >= 0.20:
-            label = 'STRONG'
-        elif score >= 0.15:
-            label = 'MODERATE'
-        elif score >= 0.10:
-            label = 'SLIGHT'
-        else:
-            label = 'MINIMAL'
-        
-        return {'score': score, 'label': label}
+        return max(0.05, min(0.3, advantage))
     
-    def _calculate_h2h_advantage(self, home_team, away_team):
-        """Calcule l'avantage historique"""
-        home_strength = self._get_team_strength(home_team)
-        away_strength = self._get_team_strength(away_team)
-        
-        diff = home_strength - away_strength
-        advantage = min(max(diff / 50, -0.2), 0.2)
-        
-        return {'score': advantage, 'label': 'ADVANTAGE' if advantage > 0 else 'DISADVANTAGE'}
-    
-    def _calculate_final_score(self, home_str, away_str, home_form, away_form,
-                             home_stats, away_stats, home_adv, h2h_adv):
-        """Calcule le score final avec pondération"""
+    def _calculate_final_score(self, home_rating, away_rating, home_form, away_form, home_stats, away_stats, home_advantage):
+        """Calcule le score final"""
         weights = self.config
         
-        base_diff = (home_str - away_str) / 100
+        # Différence de rating
+        rating_diff = (home_rating - away_rating) / 100
         
-        form_diff = (home_form['score'] * 0.7 + home_form['momentum'] * 0.3) - \
-                   (away_form['score'] * 0.7 + away_form['momentum'] * 0.3)
+        # Différence de forme
+        form_diff = home_form['score'] - away_form['score']
         
-        stats_diff = (home_stats['offense'] - away_stats['offense']) * 0.6 + \
-                    (home_stats['defense'] - away_stats['defense']) * 0.4
+        # Différence statistique
+        stats_diff = (home_stats['offense'] - away_stats['offense']) * 0.6 + (home_stats['defense'] - away_stats['defense']) * 0.4
         
-        raw_score = 0.5 + base_diff * 0.3 + form_diff * weights['weight_form'] + \
-                   stats_diff * weights['weight_offense'] + \
-                   home_adv['score'] + h2h_adv['score']
+        # Calcul final
+        raw_score = 0.5 + rating_diff * 0.3 + form_diff * weights['weight_form'] + stats_diff * weights['weight_offense'] + home_advantage
         
-        home_win_prob = max(0.1, min(0.9, raw_score))
+        # Normalisation
+        home_win = max(0.1, min(0.9, raw_score))
+        draw = 0.25 if abs(home_rating - away_rating) < 15 else 0.20
+        away_win = max(0.05, 1.0 - home_win - draw)
         
-        draw_prob = 0.25 if abs(home_str - away_str) < 10 else 0.20
-        
-        away_win_prob = max(0.05, 1.0 - home_win_prob - draw_prob)
-        
-        total = home_win_prob + draw_prob + away_win_prob
-        home_win_prob /= total
-        draw_prob /= total
-        away_win_prob /= total
+        # Ajustement pour somme = 1
+        total = home_win + draw + away_win
+        home_win /= total
+        draw /= total
+        away_win /= total
         
         return {
-            'home_win': round(home_win_prob, 3),
-            'draw': round(draw_prob, 3),
-            'away_win': round(away_win_prob, 3)
+            'home_win': round(home_win, 3),
+            'draw': round(draw, 3),
+            'away_win': round(away_win, 3)
         }
     
     def _calculate_confidence(self, home_matches, away_matches, home_consistency, away_consistency):
         """Calcule la confiance"""
-        home_data_factor = min(home_matches / 8.0, 1.0)
-        away_data_factor = min(away_matches / 8.0, 1.0)
-        data_factor = (home_data_factor + away_data_factor) / 2
+        home_factor = min(home_matches / 8.0, 1.0)
+        away_factor = min(away_matches / 8.0, 1.0)
+        data_factor = (home_factor + away_factor) / 2
         
-        consistency_factor = (home_consistency + away_consistency) / 2
+        consistency = (home_consistency + away_consistency) / 2
         
-        confidence = (data_factor * 0.4 + consistency_factor * 0.4 + 0.7 * 0.2)
+        confidence = data_factor * 0.6 + consistency * 0.4
         return round(max(0.3, min(0.95, confidence)), 3)
     
-    def _generate_enhanced_predictions(self, final_score, home_stats, away_stats,
-                                      home_strength, away_strength):
-        """Génère des prédictions améliorées"""
-        home_win_prob = final_score['home_win']
-        draw_prob = final_score['draw']
-        away_win_prob = final_score['away_win']
+    def _generate_prediction(self, final_score, home_stats, away_stats):
+        """Génère la prédiction finale"""
+        home_win = final_score['home_win']
+        draw = final_score['draw']
+        away_win = final_score['away_win']
         
-        max_prob = max(home_win_prob, draw_prob, away_win_prob)
-        
-        if max_prob == home_win_prob:
-            if home_win_prob >= 0.6:
-                recommendation = "VICTOIRE DOMICILE"
-                bet_type = "1"
-                confidence_level = "ÉLEVÉE"
-                emoji = "🏠✅"
-            elif home_win_prob >= 0.45:
-                recommendation = "DOUBLE CHANCE 1X"
-                bet_type = "1X"
-                confidence_level = "MOYENNE"
-                emoji = "🏠🤝"
-            else:
-                recommendation = "DOUBLE CHANCE 1X"
-                bet_type = "1X"
-                confidence_level = "FAIBLE"
-                emoji = "🏠⚠️"
-                
-        elif max_prob == away_win_prob:
-            if away_win_prob >= 0.6:
-                recommendation = "VICTOIRE EXTERIEUR"
-                bet_type = "2"
-                confidence_level = "ÉLEVÉE"
-                emoji = "✈️✅"
-            elif away_win_prob >= 0.45:
-                recommendation = "DOUBLE CHANCE X2"
-                bet_type = "X2"
-                confidence_level = "MOYENNE"
-                emoji = "✈️🤝"
-            else:
-                recommendation = "DOUBLE CHANCE X2"
-                bet_type = "X2"
-                confidence_level = "FAIBLE"
-                emoji = "✈️⚠️"
-                
+        # Déterminer la recommandation
+        if home_win >= 0.6:
+            recommendation = "VICTOIRE DOMICILE"
+            bet_type = "1"
+            emoji = "🏠✅"
+        elif home_win >= 0.45:
+            recommendation = "DOUBLE CHANCE 1X"
+            bet_type = "1X"
+            emoji = "🏠🤝"
+        elif away_win >= 0.6:
+            recommendation = "VICTOIRE EXTERIEUR"
+            bet_type = "2"
+            emoji = "✈️✅"
+        elif away_win >= 0.45:
+            recommendation = "DOUBLE CHANCE X2"
+            bet_type = "X2"
+            emoji = "✈️🤝"
+        elif draw >= 0.35:
+            recommendation = "MATCH NUL"
+            bet_type = "X"
+            emoji = "⚖️"
         else:
-            if draw_prob >= 0.35:
-                recommendation = "MATCH NUL"
-                bet_type = "X"
-                confidence_level = "MOYENNE"
-                emoji = "⚖️"
-            else:
-                recommendation = "DOUBLE CHANCE 1X"
-                bet_type = "1X"
-                confidence_level = "FAIBLE"
-                emoji = "🤝"
+            recommendation = "DOUBLE CHANCE 1X"
+            bet_type = "1X"
+            emoji = "🤝"
         
-        expected_home = round(home_stats['avg_scored'] * self.config['goal_expectation_multiplier'], 1)
-        expected_away = round(away_stats['avg_scored'] * 0.85, 1)
+        # Score prédit
+        expected_home = max(0, round(home_stats['avg_scored'] * 1.1, 1))
+        expected_away = max(0, round(away_stats['avg_scored'] * 0.9, 1))
         
-        str_ratio = home_strength / away_strength if away_strength > 0 else 1.5
-        expected_home *= min(str_ratio, 1.5)
-        expected_away /= min(str_ratio, 1.5)
-        
-        predicted_home = max(0, int(round(expected_home)))
-        predicted_away = max(0, int(round(expected_away)))
-        
-        total_goals = expected_home + expected_away
-        if total_goals > 3.0:
+        # Over/Under
+        total = expected_home + expected_away
+        if total > 2.5:
             over_under = "OVER 2.5"
-            ou_emoji = "⬆️"
-        elif total_goals > 2.0:
-            over_under = "OVER 2.5"
-            ou_emoji = "↗️"
         else:
             over_under = "UNDER 2.5"
-            ou_emoji = "⬇️"
-        
-        btts_prob = (home_stats['offense'] + away_stats['offense']) / 2
-        btts = "OUI" if btts_prob > 0.5 else "NON"
         
         return {
             'recommendation': recommendation,
             'bet_type': bet_type,
-            'confidence_level': confidence_level,
             'emoji': emoji,
-            'predicted_score': f"{predicted_home}-{predicted_away}",
+            'predicted_score': f"{int(expected_home)}-{int(expected_away)}",
             'expected_goals': f"{expected_home:.1f}-{expected_away:.1f}",
             'over_under': over_under,
-            'ou_emoji': ou_emoji,
-            'btts': btts,
-            'btts_prob': btts_prob,
-            'home_win_prob': home_win_prob,
-            'draw_prob': draw_prob,
-            'away_win_prob': away_win_prob
-        }
-
-# ==================== SELECTEUR ====================
-
-class SmartSelector:
-    """Sélecteur intelligent avec filtres"""
-    
-    def __init__(self):
-        self.min_confidence = Config.MIN_CONFIDENCE
-        
-    def select_best(self, analyses, limit=5):
-        """Sélectionne les meilleures analyses avec filtres"""
-        if not analyses:
-            return []
-        
-        valid = []
-        for analysis in analyses:
-            if not analysis:
-                continue
-            
-            if analysis['confidence'] < self.min_confidence:
-                continue
-            
-            preds = analysis['predictions']
-            max_prob = max(preds['home_win_prob'], preds['draw_prob'], preds['away_win_prob'])
-            if max_prob < 0.4:
-                continue
-            
-            valid.append(analysis)
-        
-        if not valid:
-            return []
-        
-        def sort_key(analysis):
-            preds = analysis['predictions']
-            max_prob = max(preds['home_win_prob'], preds['draw_prob'], preds['away_win_prob'])
-            return analysis['confidence'] * max_prob
-        
-        sorted_analyses = sorted(valid, key=sort_key, reverse=True)
-        
-        return sorted_analyses[:limit]
-    
-    def generate_report(self, predictions):
-        """Génère un rapport détaillé"""
-        if not predictions:
-            return {'total': 0, 'avg_confidence': 0, 'risk': 'HIGH', 'quality': 'LOW'}
-        
-        confidences = [p['confidence'] for p in predictions]
-        avg_conf = sum(confidences) / len(confidences)
-        
-        if avg_conf >= 0.75:
-            risk = 'LOW'
-        elif avg_conf >= 0.65:
-            risk = 'MODERATE'
-        else:
-            risk = 'HIGH'
-        
-        if len(predictions) >= 3:
-            quality = 'GOOD'
-        elif len(predictions) >= 1:
-            quality = 'FAIR'
-        else:
-            quality = 'POOR'
-        
-        bet_types = {}
-        for pred in predictions:
-            bet_type = pred['predictions']['bet_type']
-            bet_types[bet_type] = bet_types.get(bet_type, 0) + 1
-        
-        return {
-            'total': len(predictions),
-            'avg_confidence': round(avg_conf, 3),
-            'risk': risk,
-            'quality': quality,
-            'bet_types': bet_types,
-            'date': datetime.now().strftime("%d/%m/%Y")
+            'home_win': home_win,
+            'draw': draw,
+            'away_win': away_win
         }
 
 # ==================== TELEGRAM BOT ====================
 
 class TelegramBot:
-    """Bot Telegram avec messages améliorés"""
+    """Bot Telegram avec HTML au lieu de Markdown"""
     
     def __init__(self):
         self.token = Config.TELEGRAM_BOT_TOKEN
@@ -816,92 +628,91 @@ class TelegramBot:
     async def send_predictions(self, predictions, report):
         """Envoie les prédictions"""
         try:
-            message = self._format_message(predictions, report)
-            return await self._send_message(message)
+            message = self._format_html_message(predictions, report)
+            return await self._send_html_message(message)
         except Exception as e:
             logger.error(f"Erreur Telegram: {e}")
             return False
     
-    def _format_message(self, predictions, report):
-        """Formate le message"""
+    def _format_html_message(self, predictions, report):
+        """Formate le message en HTML"""
         date_str = report['date']
         
         header = f"""
-🎯 *PRONOSTICS FOOTBALL - ANALYSE EXPERT* 🎯
-📅 {date_str} | 🏆 {report['total']} sélections
+<b>⚽️ PRONOSTICS FOOTBALL ⚽️</b>
+<b>📅 {date_str} | 🏆 {report['total']} sélections</b>
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-📊 *RAPPORT DE CONFIDENCE*
-• Confiance moyenne: *{report['avg_confidence']:.1%}*
-• Niveau de risque: *{report['risk']}*
-• Qualité: *{report['quality']}*
+<b>📊 RAPPORT DE CONFIDENCE</b>
+• Confiance moyenne: <b>{report['avg_confidence']:.1%}</b>
+• Niveau de risque: <b>{report['risk']}</b>
+• Qualité: <b>{report['quality']}</b>
 
-🎰 *RÉPARTITION DES PARIS:* {', '.join([f'{k}:{v}' for k, v in report['bet_types'].items()])}
+<b>🎰 RÉPARTITION DES PARIS:</b> {', '.join([f'{k}:{v}' for k, v in report['bet_types'].items()])}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-🏆 *TOP PRONOSTICS DU JOUR* 🏆
+<b>🏆 TOP PRONOSTICS DU JOUR 🏆</b>
 """
         
         predictions_text = ""
         for i, pred in enumerate(predictions, 1):
             rank_emoji = ['🥇', '🥈', '🥉', '🎯', '🎯'][i-1]
-            pred_data = pred['predictions']
+            pred_data = pred['prediction']
             
             predictions_text += f"""
-{rank_emoji} *{pred['home_team']} vs {pred['away_team']}*
-🏆 {pred['league']} | ⚡ Confiance: *{pred['confidence']:.1%}*
+{rank_emoji} <b>{pred['home_team']} vs {pred['away_team']}</b>
+🏆 {pred['league']} | ⚡ Confiance: <b>{pred['confidence']:.1%}</b>
 
-📈 *ANALYSE DÉTAILLÉE:*
-  • Forme: {pred['home_form']['label']} vs {pred['away_form']['label']}
-  • Attaque: {pred['home_stats']['offense']:.2f} vs {pred['away_stats']['offense']:.2f}
-  • Défense: {pred['home_stats']['defense']:.2f} vs {pred['away_stats']['defense']:.2f}
-  • Domicile: {pred['home_advantage']['label']}
+<b>🎯 RECOMMANDATION: {pred_data['emoji']}</b>
+• {pred_data['recommendation']}
+• Type de pari: <b>{pred_data['bet_type']}</b>
+• Score probable: <b>{pred_data['predicted_score']}</b>
+• Buts attendus: {pred_data['expected_goals']}
+• Over/Under 2.5: {pred_data['over_under']}
 
-🎯 *RECOMMANDATION: {pred_data['emoji']}*
-  • {pred_data['recommendation']} ({pred_data['confidence_level']})
-  • Type de pari: *{pred_data['bet_type']}*
-  • Score probable: *{pred_data['predicted_score']}*
-  • Buts attendus: {pred_data['expected_goals']}
-
-📊 *STATISTIQUES:*
-  • Over/Under 2.5: {pred_data['over_under']} {pred_data['ou_emoji']}
-  • Les deux marquent: {pred_data['btts']}
-  • Probabilités: 1️⃣ {pred_data['home_win_prob']:.1%} | N {pred_data['draw_prob']:.1%} | 2️⃣ {pred_data['away_win_prob']:.1%}
+<b>📊 PROBABILITÉS:</b>
+1️⃣ {pred_data['home_win']:.1%} | N {pred_data['draw']:.1%} | 2️⃣ {pred_data['away_win']:.1%}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
         
         footer = """
-⚠️ *INFORMATIONS IMPORTANTES*
+<b>⚠️ INFORMATIONS IMPORTANTES</b>
 • Ces pronostics sont basés sur une analyse algorithmique
 • Aucun gain n'est garanti - jouez responsablement
 • Les cotes peuvent varier - vérifiez avant de parier
 
-⚙️ *SYSTÈME:* Football Predictor Pro v4.0
-📡 *SOURCE:* Données ESPN
-🔄 *PROCHAIN:* Analyse quotidienne à 07:00 UTC
+<b>⚙️ SYSTÈME:</b> Football Predictor Pro
+<b>📡 SOURCE:</b> Données ESPN
+<b>🔄 PROCHAIN:</b> Analyse quotidienne à 07:00 UTC
 """
         
-        return f"{header}\n{predictions_text}\n{footer}"
+        full_message = f"{header}\n{predictions_text}\n{footer}"
+        
+        # Limiter la taille si nécessaire
+        if len(full_message) > 4000:
+            full_message = full_message[:3900] + "\n\n... (message tronqué)"
+        
+        return full_message
     
-    async def _send_message(self, text):
-        """Envoie un message"""
+    async def _send_html_message(self, text):
+        """Envoie un message HTML"""
         try:
             url = f"https://api.telegram.org/bot{self.token}/sendMessage"
             payload = {
                 'chat_id': self.channel,
                 'text': text,
-                'parse_mode': 'Markdown',
+                'parse_mode': 'HTML',
                 'disable_web_page_preview': True
             }
             
             async with aiohttp.ClientSession() as session:
                 async with session.post(url, json=payload, timeout=30) as resp:
                     if resp.status == 200:
-                        logger.info("✅ Message Telegram envoyé")
+                        logger.info("✅ Message Telegram envoyé avec succès")
                         return True
                     else:
-                        error = await resp.text()
-                        logger.error(f"❌ Telegram error: {resp.status}")
+                        error_text = await resp.text()
+                        logger.error(f"❌ Erreur Telegram {resp.status}: {error_text}")
                         return False
                         
         except Exception as e:
@@ -911,13 +722,13 @@ class TelegramBot:
     async def send_test_message(self):
         """Envoie un message de test"""
         try:
-            message = "🤖 *Football Predictor Bot* 🤖\n\n✅ Système opérationnel\n📅 Prêt pour l'analyse quotidienne\n🔄 Prochaine exécution: 07:00 UTC"
+            message = "<b>🤖 Football Predictor Bot 🤖</b>\n\n✅ Système opérationnel\n📅 Prêt pour l'analyse quotidienne\n🔄 Prochaine exécution: 07:00 UTC"
             
             url = f"https://api.telegram.org/bot{self.token}/sendMessage"
             payload = {
                 'chat_id': self.channel,
                 'text': message,
-                'parse_mode': 'Markdown'
+                'parse_mode': 'HTML'
             }
             
             async with aiohttp.ClientSession() as session:
@@ -928,15 +739,78 @@ class TelegramBot:
             logger.error(f"Erreur test Telegram: {e}")
             return False
 
+# ==================== SELECTEUR ====================
+
+class PredictionsSelector:
+    """Sélectionne les meilleures prédictions"""
+    
+    def __init__(self):
+        self.min_confidence = Config.MIN_CONFIDENCE
+    
+    def select_best(self, analyses, limit=3):
+        """Sélectionne les meilleures analyses"""
+        if not analyses:
+            return []
+        
+        # Filtrer par confiance minimale
+        valid = [a for a in analyses if a and a['confidence'] >= self.min_confidence]
+        
+        if not valid:
+            return []
+        
+        # Trier par confiance
+        valid.sort(key=lambda x: x['confidence'], reverse=True)
+        
+        return valid[:limit]
+    
+    def generate_report(self, predictions):
+        """Génère un rapport"""
+        if not predictions:
+            return {'total': 0, 'avg_confidence': 0, 'risk': 'HIGH', 'quality': 'LOW'}
+        
+        confidences = [p['confidence'] for p in predictions]
+        avg_conf = sum(confidences) / len(confidences)
+        
+        # Niveau de risque
+        if avg_conf >= 0.75:
+            risk = 'FAIBLE'
+        elif avg_conf >= 0.65:
+            risk = 'MOYEN'
+        else:
+            risk = 'ÉLEVÉ'
+        
+        # Qualité
+        if len(predictions) >= 3:
+            quality = 'BONNE'
+        elif len(predictions) >= 1:
+            quality = 'MOYENNE'
+        else:
+            quality = 'FAIBLE'
+        
+        # Types de paris
+        bet_types = {}
+        for pred in predictions:
+            bet_type = pred['prediction']['bet_type']
+            bet_types[bet_type] = bet_types.get(bet_type, 0) + 1
+        
+        return {
+            'total': len(predictions),
+            'avg_confidence': round(avg_conf, 3),
+            'risk': risk,
+            'quality': quality,
+            'bet_types': bet_types,
+            'date': datetime.now().strftime("%d/%m/%Y")
+        }
+
 # ==================== SYSTÈME PRINCIPAL ====================
 
 class FootballPredictionSystem:
-    """Système principal amélioré"""
+    """Système principal"""
     
     def __init__(self):
         self.db = Database()
-        self.analyzer = EnhancedAnalyzer()
-        self.selector = SmartSelector()
+        self.analyzer = MatchAnalyzer()
+        self.selector = PredictionsSelector()
         self.telegram = TelegramBot()
         
         logger.info("🚀 Système Football Predictor initialisé")
@@ -945,10 +819,8 @@ class FootballPredictionSystem:
         """Exécute l'analyse quotidienne"""
         logger.info("🔄 Démarrage analyse...")
         
-        if not test_mode:
-            await self.telegram.send_test_message()
-        
         try:
+            # 1. Collecte des matchs
             async with ESPNCollector() as collector:
                 days_ahead = 0 if test_mode else 1
                 matches = await collector.fetch_matches(days_ahead)
@@ -960,19 +832,20 @@ class FootballPredictionSystem:
                 
                 logger.info(f"📊 {len(matches)} matchs à analyser")
                 
+                # 2. Analyse
                 analyses = []
-                for match in matches[:15]:
+                for match in matches[:10]:  # Limiter à 10 matchs
                     try:
                         home_history = await collector.fetch_team_history(
                             match['home_team']['id'],
                             match['home_team']['name'],
-                            8
+                            6
                         )
                         
                         away_history = await collector.fetch_team_history(
                             match['away_team']['id'],
                             match['away_team']['name'],
-                            8
+                            6
                         )
                         
                         analysis = self.analyzer.analyze(match, home_history, away_history)
@@ -987,21 +860,26 @@ class FootballPredictionSystem:
                 
                 logger.info(f"✅ {len(analyses)} matchs analysés")
                 
-                top_predictions = self.selector.select_best(analyses, 5)
+                # 3. Sélection
+                top_predictions = self.selector.select_best(analyses, 3)
                 
                 if not top_predictions:
                     logger.warning("⚠️ Aucune prédiction valide")
                     await self._send_no_predictions(test_mode)
                     return
                 
+                # 4. Rapport
                 report = self.selector.generate_report(top_predictions)
                 
+                # 5. Envoi Telegram
+                logger.info("📤 Envoi vers Telegram...")
                 success = await self.telegram.send_predictions(top_predictions, report)
                 
                 if success:
                     logger.info("✅ Analyse terminée avec succès")
+                    # Sauvegarde
                     for pred in top_predictions:
-                        pred_data = pred['predictions']
+                        pred_data = pred['prediction']
                         pred_to_save = {
                             'match_id': pred['match_id'],
                             'league': pred['league'],
@@ -1013,14 +891,11 @@ class FootballPredictionSystem:
                             'bet_type': pred_data['bet_type']
                         }
                         self.db.save_prediction(pred_to_save)
-                        self.db.mark_sent(pred['match_id'])
                 else:
                     logger.error("❌ Échec envoi Telegram")
                 
         except Exception as e:
             logger.error(f"❌ Erreur système: {e}", exc_info=True)
-            if not test_mode:
-                await self._send_error(str(e))
     
     async def _send_no_matches(self, test_mode):
         """Message aucun match"""
@@ -1028,8 +903,8 @@ class FootballPredictionSystem:
             return
         
         try:
-            message = "📭 *AUCUN MATCH AUJOURD'HUI*\n\nPas de match programmé pour demain.\n🔄 Prochaine analyse: 07:00 UTC"
-            await self.telegram._send_message(message)
+            message = "<b>📭 AUCUN MATCH AUJOURD'HUI</b>\n\nPas de match programmé.\n🔄 Prochaine analyse: 07:00 UTC"
+            await self.telegram._send_html_message(message)
         except:
             pass
     
@@ -1039,29 +914,20 @@ class FootballPredictionSystem:
             return
         
         try:
-            message = "⚠️ *AUCUN PRONOSTIC VALIDE*\n\nAucun match ne remplit les critères de confiance.\n🔄 Prochaine analyse: 07:00 UTC"
-            await self.telegram._send_message(message)
-        except:
-            pass
-    
-    async def _send_error(self, error):
-        """Message d'erreur"""
-        try:
-            message = f"🚨 *ERREUR SYSTÈME*\n\n`{error[:100]}`\n\n🔧 L'équipe a été notifiée."
-            await self.telegram._send_message(message)
+            message = "<b>⚠️ AUCUN PRONOSTIC VALIDE</b>\n\nAucun match ne remplit les critères de confiance.\n🔄 Prochaine analyse: 07:00 UTC"
+            await self.telegram._send_html_message(message)
         except:
             pass
 
 # ==================== SCHEDULER ====================
 
 class Scheduler:
-    """Planificateur Railway corrigé"""
+    """Planificateur Railway"""
     
     def __init__(self):
         self.scheduler = None
         self.system = FootballPredictionSystem()
         self.running = True
-        self.scheduler_started = False
         
         # Gestion des signaux
         signal.signal(signal.SIGINT, self.shutdown)
@@ -1072,12 +938,6 @@ class Scheduler:
         logger.info("⏰ Planificateur démarré")
         logger.info(f"📍 Fuseau: {Config.TIMEZONE}")
         logger.info(f"⏰ Heure quotidienne: {Config.DAILY_TIME}")
-        
-        # Parser l'heure
-        try:
-            hour, minute = map(int, Config.DAILY_TIME.split(':'))
-        except:
-            hour, minute = 7, 0
         
         # Mode test
         if '--test' in sys.argv:
@@ -1094,6 +954,12 @@ class Scheduler:
         # Mode normal - démarrer le scheduler
         self.scheduler = AsyncIOScheduler(timezone=Config.TIMEZONE)
         
+        # Parser l'heure
+        try:
+            hour, minute = map(int, Config.DAILY_TIME.split(':'))
+        except:
+            hour, minute = 7, 0
+        
         # Planifier la tâche quotidienne
         self.scheduler.add_job(
             self._daily_task,
@@ -1103,7 +969,6 @@ class Scheduler:
         )
         
         self.scheduler.start()
-        self.scheduler_started = True
         
         try:
             while self.running:
@@ -1122,7 +987,7 @@ class Scheduler:
         logger.info("🛑 Arrêt du planificateur...")
         self.running = False
         
-        if self.scheduler_started and self.scheduler:
+        if self.scheduler:
             self.scheduler.shutdown(wait=False)
         
         logger.info("✅ Planificateur arrêté")
@@ -1135,30 +1000,29 @@ def main():
     
     if '--help' in sys.argv:
         print("""
-🚀 Football Prediction Bot - Version Pro
+🚀 Football Prediction Bot
 Usage:
-  python bot.py              # Mode normal (démarrer le scheduler)
-  python bot.py --test       # Mode test (exécution immédiate + arrêt)
-  python bot.py --manual     # Mode manuel (exécution unique)
-  python bot.py --help       # Afficher cette aide
+  python bot.py              # Mode normal
+  python bot.py --test       # Mode test
+  python bot.py --manual     # Mode manuel
+  python bot.py --help       # Aide
 
-Variables d'environnement Railway:
+Variables Railway:
   • TELEGRAM_BOT_TOKEN      (requis)
   • TELEGRAM_CHANNEL_ID     (requis)
-  • TIMEZONE                (optionnel, défaut: UTC)
-  • DAILY_TIME              (optionnel, défaut: 07:00)
-  • MIN_CONFIDENCE          (optionnel, défaut: 0.60)
-  • LOG_LEVEL               (optionnel, défaut: INFO)
+  • TIMEZONE                (UTC)
+  • DAILY_TIME              (07:00)
+  • MIN_CONFIDENCE          (0.60)
+  • LOG_LEVEL               (INFO)
         """)
         return
     
     # Validation
     errors = Config.validate()
     if errors:
-        print("❌ ERREURS DE CONFIGURATION:")
+        print("❌ ERREURS:")
         for error in errors:
             print(f"  - {error}")
-        print("\n⚠️  Configurez dans Railway Dashboard")
         return
     
     # Démarrer
