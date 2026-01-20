@@ -1,45 +1,37 @@
 {
   "$schema": "https://railway.app/railway.schema.json",
   "build": {
-    "builder": "NIXPACKS",
-    "buildCommand": "pip install -r requirements.txt"
+    "builder": "NIXPACKS"
   },
   "deploy": {
-    "startCommand": "python scheduler.py",
-    "healthcheckPath": "/health",
-    "healthcheckTimeout": 30,
+    "startCommand": "python bot.py",
     "restartPolicyType": "ON_FAILURE",
-    "restartPolicyMaxRetries": 3,
-    "numReplicas": 1
+    "restartPolicyMaxRetries": 10
   },
-  " variables": {
+  "variables": {
     "TELEGRAM_BOT_TOKEN": {
-      "description": "Token du bot Telegram (obtenu via @BotFather)",
+      "description": "Token du bot Telegram (@BotFather)",
       "required": true
     },
     "TELEGRAM_CHANNEL_ID": {
-      "description": "ID du canal Telegram (@nom_du_canal)",
+      "description": "ID du canal Telegram (@nom ou -100xxx)",
       "required": true
     },
     "TIMEZONE": {
-      "description": "Fuseau horaire pour le scheduler",
+      "description": "Fuseau horaire",
       "default": "Europe/Paris"
     },
     "DAILY_TIME": {
-      "description": "Heure d'envoi quotidien (format HH:MM)",
+      "description": "Heure d'envoi (HH:MM)",
       "default": "07:00"
     },
     "MIN_CONFIDENCE": {
-      "description": "Confiance minimale pour sélection (0.0 à 1.0)",
+      "description": "Confiance minimale (0.0-1.0)",
       "default": "0.65"
     },
     "LOG_LEVEL": {
-      "description": "Niveau de log (DEBUG, INFO, WARNING, ERROR)",
+      "description": "Niveau de logs",
       "default": "INFO"
-    },
-    "CLEANUP_DAYS": {
-      "description": "Jours avant nettoyage des anciennes données",
-      "default": "30"
     }
   }
 }
