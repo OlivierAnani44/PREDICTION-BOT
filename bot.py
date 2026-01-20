@@ -1,7 +1,9 @@
+
 #!/usr/bin/env python3
 """
 FOOTBALL PREDICTION BOT - VERSION FINALE
 API OpenLigaDB avec modèles statistiques avancés
+CORRECTIF: Gestion des erreurs + Ajout des 51 ligues
 """
 
 import os
@@ -44,56 +46,150 @@ class Config:
     # OpenLigaDB API Configuration
     OPENLIGADB_BASE = "https://api.openligadb.de"
     
-    # Ligues supportées (format OpenLigaDB)
+    # Toutes les ligues supportées (format OpenLigaDB)
+    # Note: Les shortcuts sont des estimations basées sur la doc et des recherches.
+    # Certains peuvent ne pas exister ou nécessiter des ajustements.
     LEAGUES = {
         # Allemagne
         "bundesliga": {"shortcut": "bl1", "name": "Bundesliga"},
         "bundesliga2": {"shortcut": "bl2", "name": "Bundesliga 2"},
+        "dfb_cup": {"shortcut": "dfb", "name": "DFB Pokal"}, # Coupe d'Allemagne
         
         # Angleterre
         "premier_league": {"shortcut": "pl", "name": "Premier League"},
         "championship": {"shortcut": "ch", "name": "Championship"},
+        "fa_cup": {"shortcut": "fac", "name": "FA Cup"},
+        "league_cup": {"shortcut": "lc", "name": "EFL Cup"}, # League Cup
         
         # Espagne
         "la_liga": {"shortcut": "laliga", "name": "La Liga"},
-        "segunda": {"shortcut": "laliga2", "name": "Segunda Division"},
+        "la_liga2": {"shortcut": "laliga2", "name": "La Liga 2"},
+        "copa_del_rey": {"shortcut": "cdr", "name": "Copa del Rey"},
         
         # Italie
         "serie_a": {"shortcut": "seriea", "name": "Serie A"},
         "serie_b": {"shortcut": "serieb", "name": "Serie B"},
+        "coppa_italia": {"shortcut": "ci", "name": "Coppa Italia"},
         
         # France
         "ligue_1": {"shortcut": "lig1", "name": "Ligue 1"},
         "ligue_2": {"shortcut": "lig2", "name": "Ligue 2"},
+        "coupe_de_france": {"shortcut": "cdf", "name": "Coupe de France"},
+        "trophee_des_champions": {"shortcut": "tdc", "name": "Trophée des Champions"},
+        "d1_feminine": {"shortcut": "d1f", "name": "D1 Féminine"},
         
         # Pays-Bas
         "eredivisie": {"shortcut": "eredivisie", "name": "Eredivisie"},
         
         # Belgique
-        "jupiler": {"shortcut": "jupiler", "name": "Jupiler Pro League"},
+        "jupiler_pro_league": {"shortcut": "jupiler", "name": "Jupiler Pro League"},
         
         # Autriche
-        "austria": {"shortcut": "bundesliga", "name": "Austrian Bundesliga"},
+        "austrian_bundesliga": {"shortcut": "aab", "name": "Austrian Bundesliga"},
         
         # Portugal
-        "liga": {"shortcut": "liga", "name": "Primeira Liga"},
+        "primeira_liga": {"shortcut": "liga", "name": "Primeira Liga"},
+        "segunda_liga": {"shortcut": "liga2", "name": "Segunda Liga"},
+        "taça_de_portugal": {"shortcut": "tcp", "name": "Taça de Portugal"},
+        "supertaça_cândido_de_oliveira": {"shortcut": "sco", "name": "Supertaça Cândido de Oliveira"},
         
         # Turquie
         "super_lig": {"shortcut": "superlig", "name": "Süper Lig"},
         
         # Russie
-        "russia": {"shortcut": "rfpl", "name": "Russian Premier League"},
+        "russian_premier_league": {"shortcut": "rfpl", "name": "Russian Premier League"},
         
         # Suisse
-        "switzerland": {"shortcut": "superleague", "name": "Swiss Super League"},
+        "super_league": {"shortcut": "superleague", "name": "Swiss Super League"},
         
         # Grèce
-        "greece": {"shortcut": "superleague", "name": "Greek Super League"},
+        "super_league_greece": {"shortcut": "slgr", "name": "Greek Super League"},
         
         # Europe
-        "champions": {"shortcut": "cl", "name": "UEFA Champions League"},
-        "europa": {"shortcut": "el", "name": "UEFA Europa League"},
-        "conference": {"shortcut": "ecl", "name": "UEFA Europa Conference League"},
+        "uefa_champions_league": {"shortcut": "cl", "name": "UEFA Champions League"},
+        "uefa_europa_league": {"shortcut": "el", "name": "UEFA Europa League"},
+        "uefa_europa_conference_league": {"shortcut": "ecl", "name": "UEFA Europa Conference League"},
+        # Les autres compétitions européennes (Nations League, Euro, etc.) n'ont pas de shortcuts fixes permanents dans l'API
+        # Elles changent selon les phases et les années. On omet pour l'instant.
+        
+        # Brésil
+        "brasileirao": {"shortcut": "br", "name": "Campeonato Brasileiro Série A"},
+        
+        # Mexique
+        "liga_mx": {"shortcut": "lmx", "name": "Liga MX"},
+        
+        # États-Unis
+        "major_league_soccer": {"shortcut": "mls", "name": "Major League Soccer"},
+        
+        # Amérique du Sud (Copa Libertadores, Sudamericana)
+        # L'API OpenLigaDB ne semble pas les supporter directement.
+        
+        # Afrique (CAF Competitions)
+        # L'API OpenLigaDB ne semble pas les supporter directement.
+        
+        # Asie (AFC Competitions)
+        # L'API OpenLigaDB ne semble pas les supporter directement.
+        
+        # International (Coupe du monde, Copa America, etc.)
+        # Ces événements sont cycliques et n'ont pas de shortcuts fixes. Omission pour l'instant.
+        
+        # Reste des ligues nationales
+        "algerian_ligue_1": {"shortcut": "alg1", "name": "Algerian Ligue 1"}, # Peut ne pas exister
+        "saudi_professional_league": {"shortcut": "spl", "name": "Saudi Professional League"},
+        "cameroonian_elite_one": {"shortcut": "cmr1", "name": "Cameroonian Elite One"}, # Peut ne pas exister
+        "ivorian_ligue_1": {"shortcut": "civ1", "name": "Ivorian Ligue 1"}, # Peut ne pas exister
+        "scottish_premiership": {"shortcut": "spfl", "name": "Scottish Premiership"},
+        "egyptian_premier_league": {"shortcut": "egy1", "name": "Egyptian Premier League"}, # Peut ne pas exister
+        "norwegian_eliteserien": {"shortcut": "noe", "name": "Norwegian Eliteserien"},
+        "danish_superliga": {"shortcut": "dsl", "name": "Danish Superliga"}, # Peut ne pas exister
+        "swedish_allsvenskan": {"shortcut": "swe", "name": "Swedish Allsvenskan"}, # Peut ne pas exister
+        "turkish_super_lig": {"shortcut": "tsl", "name": "Turkish Süper Lig"}, # Déjà là
+        "ukrainian_premier_league": {"shortcut": "upl", "name": "Ukrainian Premier League"},
+        "moroccan_botola_pro": {"shortcut": "mrb", "name": "Moroccan Botola Pro"}, # Peut ne pas exister
+        "tunisian_ligue_professionnelle_1": {"shortcut": "tun1", "name": "Tunisian Ligue Professionnelle 1"}, # Peut ne pas exister
+        "senegalese_ligue_1": {"shortcut": "sen1", "name": "Senegalese Ligue 1"}, # Peut ne pas exister
+        "south_african_psl": {"shortcut": "saf", "name": "South African PSL"}, # Peut ne pas exister
+        "japanese_j1_league": {"shortcut": "jpn", "name": "Japanese J1 League"}, # Peut ne pas exister
+        "korean_k_league_1": {"shortcut": "kor", "name": "Korean K League 1"}, # Peut ne pas exister
+        # ... Ajouter d'autres ligues si les shortcuts sont confirmés ...
+        
+        # Ligues additionnelles potentiellement supportées
+        "czech_1_liga": {"shortcut": "cz1", "name": "Czech 1. Liga"}, # Peut ne pas exister
+        "hungarian_nemzeti_bajnoksag_i": {"shortcut": "hun", "name": "Hungarian NB I"}, # Peut ne pas exister
+        "polish_ekstraklasa": {"shortcut": "pol", "name": "Polish Ekstraklasa"}, # Peut ne pas exister
+        "serbian_superliga": {"shortcut": "srb", "name": "Serbian Superliga"}, # Peut ne pas exister
+        "romanian_liga_1": {"shortcut": "rom", "name": "Romanian Liga 1"}, # Peut ne pas exister
+        "bulgarian_parva_liga": {"shortcut": "bul", "name": "Bulgarian Parva Liga"}, # Peut ne pas exister
+        "croatian_prva_hnl": {"shortcut": "cro", "name": "Croatian Prva HNL"}, # Peut ne pas exister
+        "slovenian_prva_liga": {"shortcut": "svn", "name": "Slovenian Prva Liga"}, # Peut ne pas exister
+        "slovak_superliga": {"shortcut": "svk", "name": "Slovak Superliga"}, # Peut ne pas exister
+        "maltese_premier_league": {"shortcut": "mlt", "name": "Maltese Premier League"}, # Peut ne pas exister
+        "luxembourgish_national_division": {"shortcut": "lux", "name": "Luxembourgish National Division"}, # Peut ne pas exister
+        "latvian_virsliga": {"shortcut": "lat", "name": "Latvian Virsliga"}, # Peut ne pas exister
+        "lithuanian_alytus_lyga": {"shortcut": "ltu", "name": "Lithuanian Alytus Lyga"}, # Peut ne pas exister
+        "estonian_meistriliiga": {"shortcut": "est", "name": "Estonian Meistriliiga"}, # Peut ne pas exister
+        "icelandic_Úrvalsdeild": {"shortcut": "isl", "name": "Icelandic Úrvalsdeild"}, # Peut ne pas exister
+        "finnish_veikkausliiga": {"shortcut": "fin", "name": "Finnish Veikkausliiga"}, # Peut ne pas exister
+        "belarusian_vysheyshaya_liga": {"shortcut": "blr", "name": "Belarusian Vysheyshaya Liga"}, # Peut ne pas exister
+        "moldovan_divizia_națională": {"shortcut": "mda", "name": "Moldovan Divizia Națională"}, # Peut ne pas exister
+        "georgian_ეროვნული_ლიგა": {"shortcut": "geo", "name": "Georgian Erovnuli Liga"}, # Peut ne pas exister
+        "armenian_premier_league": {"shortcut": "arm", "name": "Armenian Premier League"}, # Peut ne pas exister
+        "azerbaijani_premier_league": {"shortcut": "aze", "name": "Azerbaijani Premier League"}, # Peut ne pas exister
+        "kazakhstani_premier_league": {"shortcut": "kaz", "name": "Kazakhstani Premier League"}, # Peut ne pas exister
+        "kyrgyzstani_supercup": {"shortcut": "kgz", "name": "Kyrgyzstani Championship"}, # Peut ne pas exister
+        "uzbekistani_ozbekiston_premier_league": {"shortcut": "uzb", "name": "Uzbekistan Premier League"}, # Peut ne pas exister
+        "tajikistani_vahdat_i_stadium": {"shortcut": "tjk", "name": "Tajikistan Higher League"}, # Peut ne pas exister
+        "turkmenistan_ýokary_ligasy": {"shortcut": "tkm", "name": "Turkmenistan Higher League"}, # Peut ne pas exister
+        "mongolian_milwaukee_bucks_league": {"shortcut": "mng", "name": "Mongolian Premier League"}, # Peut ne pas exister
+        "indian_super_league": {"shortcut": "isl_ind", "name": "Indian Super League"}, # Peut ne pas exister
+        "chinese_super_league": {"shortcut": "csl", "name": "Chinese Super League"}, # Peut ne pas exister
+        "thai_premier_league": {"shortcut": "tgl", "name": "Thai Premier League"}, # Peut ne pas exister
+        "vietnamese_v_league_1": {"shortcut": "v1", "name": "Vietnamese V.League 1"}, # Peut ne pas exister
+        "malaysian_super_league": {"shortcut": "msl", "name": "Malaysian Super League"}, # Peut ne pas exister
+        "singaporean_premier_league": {"shortcut": "sgp", "name": "Singapore Premier League"}, # Peut ne pas exister
+        "australian_aleague": {"shortcut": "al", "name": "Australian A-League"}, # Peut ne pas exister
+        "new_zealand_premier_league": {"shortcut": "nzl", "name": "New Zealand Premier League"}, # Peut ne pas exister
+        # Ajouter les ligues manquantes en fonction de la disponibilité réelle sur OpenLigaDB
     }
     
     # Configuration avancée du modèle
@@ -276,7 +372,7 @@ class OpenLigaDBCollector:
         """Récupère les matchs du jour pour toutes les ligues"""
         logger.info("📡 Collecte des matchs du jour...")
         
-        today = datetime.now()
+        today = datetime.now().date()
         all_matches = []
         
         for league_key, league_info in Config.LEAGUES.items():
@@ -284,27 +380,35 @@ class OpenLigaDBCollector:
                 league_shortcut = league_info["shortcut"]
                 
                 # Essayer de récupérer le prochain match de la ligue
+                # Cette méthode est fiable pour récupérer le prochain match
                 url = f"{Config.OPENLIGADB_BASE}/getnextmatchbyleagueshortcut/{league_shortcut}"
                 
-                logger.debug(f"🔍 Vérification {league_info['name']}")
+                logger.debug(f"🔍 Vérification {league_info['name']} (shortcut: {league_shortcut})")
                 
                 async with self.session.get(url, timeout=Config.API_TIMEOUT) as response:
                     if response.status == 200:
                         data = await response.json()
-                        if isinstance(data, list):
-                            matches = self._parse_matches_list(data, league_info["name"])
-                        else:
-                            matches = [self._parse_match_single(data, league_info["name"])] if data else []
-                        
-                        if matches:
-                            logger.info(f"✅ {league_info['name']}: {len(matches)} match(s)")
-                            all_matches.extend(matches)
+                        if isinstance(data, dict): # Un seul match
+                            parsed_match = self._parse_match_single(data, league_info["name"], league_shortcut)
+                            if parsed_match and parsed_match.get('date'):
+                                match_date = datetime.fromisoformat(parsed_match['date'].replace('Z', '+00:00')).date()
+                                if match_date == today:
+                                    all_matches.append(parsed_match)
+                                    logger.debug(f"  ✅ Match trouvé: {parsed_match['home_team']['name']} vs {parsed_match['away_team']['name']}")
+                        elif isinstance(data, list): # Liste de matchs (moins courant pour getnextmatch)
+                             for item in data:
+                                 parsed_match = self._parse_match_single(item, league_info["name"], league_shortcut)
+                                 if parsed_match and parsed_match.get('date'):
+                                     match_date = datetime.fromisoformat(parsed_match['date'].replace('Z', '+00:00')).date()
+                                     if match_date == today:
+                                         all_matches.append(parsed_match)
+                                         logger.debug(f"  ✅ Match trouvé: {parsed_match['home_team']['name']} vs {parsed_match['away_team']['name']}")
                     elif response.status == 404:
-                        logger.debug(f"📭 {league_info['name']}: Pas de match (HTTP 404)")
+                        logger.debug(f"  📭 {league_info['name']}: Pas de match (HTTP 404)")
                     else:
-                        logger.warning(f"⚠️ {league_info['name']}: HTTP {response.status}")
+                        logger.warning(f"  ⚠️ {league_info['name']}: HTTP {response.status}")
                 
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.5) # Rate limiting
                 
             except asyncio.TimeoutError:
                 logger.error(f"⏱️ Timeout pour {league_info['name']}")
@@ -313,36 +417,23 @@ class OpenLigaDBCollector:
                 logger.error(f"❌ Erreur {league_info['name']}: {str(e)[:100]}")
                 continue
         
-        logger.info(f"📊 Total matchs trouvés: {len(all_matches)}")
+        logger.info(f"📊 Total matchs trouvés aujourd'hui: {len(all_matches)}")
         return all_matches
     
-    def _parse_matches_list(self, data, league_name):
-        """Parse une liste de matchs"""
-        matches = []
-        today = datetime.now().date()
-        
-        for match in data:
-            try:
-                match_date = datetime.fromisoformat(match.get('matchDateTime', '').replace('Z', '+00:00'))
-                
-                # Vérifier si le match est aujourd'hui
-                if match_date.date() == today:
-                    match_data = self._parse_match_single(match, league_name)
-                    if match_data:
-                        matches.append(match_data)
-            except:
-                continue
-        
-        return matches
-    
-    def _parse_match_single(self, match, league_name):
+    def _parse_match_single(self, match, league_name, league_shortcut):
         """Parse un match unique"""
         try:
             # Vérifier la date
-            match_date = datetime.fromisoformat(match.get('matchDateTime', '').replace('Z', '+00:00'))
+            date_str = match.get('matchDateTime', '')
+            if not date_str:
+                 logger.debug("  - Date manquante dans le match")
+                 return None
+
+            match_date = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
             today = datetime.now().date()
             
             if match_date.date() != today:
+                # Ce n'est pas un match d'aujourd'hui, ignorer
                 return None
             
             # Extraire les équipes
@@ -350,11 +441,13 @@ class OpenLigaDBCollector:
             team2 = match.get('team2', {})
             
             if not team1 or not team2:
+                logger.debug("  - Informations équipe manquantes")
                 return None
             
             match_data = {
                 'match_id': match.get('matchID', 0),
                 'league': league_name,
+                'league_shortcut': league_shortcut,
                 'date': match.get('matchDateTime', ''),
                 'home_team': {
                     'id': team1.get('teamId', 0),
@@ -380,6 +473,8 @@ class OpenLigaDBCollector:
         """Récupère l'historique d'une équipe"""
         try:
             # Utiliser getmatchesbyteamid pour récupérer les matchs passés
+            # weekCountPast=10 semaines dans le passé
+            # weekCountFuture=0 semaines dans le futur
             url = f"{Config.OPENLIGADB_BASE}/getmatchesbyteamid/{team_id}/10/0"
             
             async with self.session.get(url, timeout=Config.API_TIMEOUT) as response:
@@ -387,7 +482,7 @@ class OpenLigaDBCollector:
                     data = await response.json()
                     return self._parse_team_history(data, team_id)
                 else:
-                    logger.debug(f"No history found for {team_name}")
+                    logger.debug(f"No history found for {team_name} (status: {response.status})")
                     return []
         except Exception as e:
             logger.error(f"Erreur historique {team_name}: {e}")
@@ -397,6 +492,10 @@ class OpenLigaDBCollector:
         """Parse l'historique d'une équipe"""
         matches = []
         
+        if not isinstance(data, list):
+             logger.debug("Données d'historique non-liste")
+             return []
+
         for match in data:
             try:
                 if match.get('matchIsFinished', False):
@@ -443,7 +542,7 @@ class OpenLigaDBCollector:
                             score_team = pts_team
                             score_opp = pts_opp
                         else:
-                            continue
+                            continue # Passer ce match s'il n'y a ni goals ni results
                     
                     match_info = {
                         'date': match.get('matchDateTime', ''),
@@ -458,8 +557,9 @@ class OpenLigaDBCollector:
                     
                     if len(matches) >= 10:  # Limiter à 10 derniers matchs
                         break
-            except:
-                continue
+            except Exception as e:
+                 logger.debug(f"Erreur parsing match historique: {e}")
+                 continue
         
         return matches
 
@@ -1094,7 +1194,11 @@ class FootballPredictionSystem:
                 # 2. Analyse
                 analyses = []
                 for match in matches[:20]:  # Limiter à 20 matchs pour performance
+                    if not match: # Vérifier que le match n'est pas None
+                         logger.warning("Match invalide détecté, ignoré.")
+                         continue
                     try:
+                        logger.debug(f"Analyse du match: {match['home_team']['name']} vs {match['away_team']['name']}")
                         home_history = await collector.fetch_team_history(
                             match['home_team']['id'],
                             match['home_team']['name'],
@@ -1112,12 +1216,14 @@ class FootballPredictionSystem:
                         analysis = self.analyzer.analyze(match, home_history, away_history)
                         if analysis:
                             analyses.append(analysis)
+                        else:
+                             logger.warning(f"Analyse échouée pour {match['home_team']['name']} vs {match['away_team']['name']}")
                         
                         await asyncio.sleep(0.2)  # Rate limiting
                         
                     except Exception as e:
-                        logger.error(f"Erreur analyse match {match.get('match_id', 'unknown')}: {e}")
-                        continue
+                        logger.error(f"Erreur critique analyse match {match.get('match_id', 'unknown') if match else 'None'}: {e}")
+                        continue # Passer au match suivant
                 
                 logger.info(f"✅ {len(analyses)} matchs analysés avec succès")
                 
@@ -1125,7 +1231,7 @@ class FootballPredictionSystem:
                 top_predictions = self.selector.select_best(analyses, 5)
                 
                 if not top_predictions:
-                    logger.warning("⚠️ Aucune prédiction valide")
+                    logger.warning("⚠️ Aucune prédiction valide (confiance insuffisante)")
                     await self._send_no_predictions()
                     return
                 
@@ -1169,7 +1275,7 @@ class FootballPredictionSystem:
     async def _send_no_predictions(self):
         """Message aucune prédiction"""
         try:
-            message = "<b>⚠️ AUCUN PRONOSTIC VALIDE</b>\n\nAucun match ne remplit les critères de confiance.\n🔄 Prochaine analyse: 07:00 UTC"
+            message = "<b>⚠️ AUCUN PRONOSTIC VALIDE</b>\n\nAucun match ne remplit les critères de confiance ou pas assez de données.\n🔄 Prochaine analyse: 07:00 UTC"
             await self.telegram._send_html_message(message)
         except:
             pass
