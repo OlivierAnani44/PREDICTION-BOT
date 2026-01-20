@@ -45,6 +45,7 @@ class Config:
     MIN_CONFIDENCE = float(os.getenv("MIN_CONFIDENCE", "0.65"))
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
     CLEANUP_DAYS = int(os.getenv("CLEANUP_DAYS", "30"))
+    TEST_DATE = os.getenv("TEST_DATE", "")  # Format: YYYYMMDD (ex: 20240120)
     
     # Configuration ESPN
     ESPN_BASE_URL = "https://site.api.espn.com/apis/site/v2/sports/soccer"
@@ -72,6 +73,12 @@ class Config:
         "SUI.1": "soccer/sui.1", "TUN.1": "soccer/tun.1", "TUR.1": "soccer/tur.1",
         "UKR.1": "soccer/ukr.1"
     }
+    
+    # Ligues prioritaires pour tests
+    TEST_LEAGUES = [
+        "ENG.1", "ESP.1", "GER.1", "ITA.1", "FRA.1",
+        "UEFA.CL", "UEFA.EL"
+    ]
     
     PRIORITY_LEAGUES = [
         "ENG.1", "ESP.1", "GER.1", "ITA.1", "FRA.1",
@@ -225,25 +232,47 @@ class ESPNCollector:
         logger.info("📡 Collecte des matchs ESPN...")
         
         all_matches = []
-        today = datetime.now().strftime("%Y%m%d")
         
-        for league_code, league_path in Config.LEAGUE_MAPPING.items():
+        # Utiliser date de test ou date actuelle
+        if Config.TEST_DATE:
+            today = Config.TEST_DATE
+            logger.info(f"📅 Utilisation date de test: {today}")
+        else:
+            today = datetime.now().strftime("%Y%m%d")
+            logger.info(f"📅 Date du jour: {today}")
+        
+        # En mode test, on se limite aux ligues prioritaires
+        leagues_to_check = Config.TEST_LEAGUES if Config.TEST_DATE or '--test' in sys.argv else Config.LEAGUE_MAPPING.keys()
+        
+        logger.info(f"🔍 Vérification de {len(leagues_to_check)} ligues")
+        
+        for league_code in leagues_to_check:
+            league_path = Config.LEAGUE_MAPPING.get(league_code)
+            if not league_path:
+                continue
+            
             try:
                 url = f"{self.base_url}/{league_path}/scoreboard"
                 params = {"dates": today}
+                
+                logger.debug(f"🔗 Appel API: {league_code} ({today})")
                 
                 async with self.session.get(url, params=params, timeout=30) as response:
                     if response.status == 200:
                         data = await response.json()
                         matches = self._extract_matches(data, league_code)
                         if matches:
-                            logger.debug(f"✅ {league_code}: {len(matches)} match(s)")
+                            logger.info(f"✅ {league_code}: {len(matches)} match(s)")
                             all_matches.extend(matches)
+                        else:
+                            logger.debug(f"📭 {league_code}: Aucun match")
+                    else:
+                        logger.warning(f"⚠️ {league_code}: HTTP {response.status}")
                 
                 await asyncio.sleep(0.5)  # Respect rate limits
                 
             except Exception as e:
-                logger.error(f"❌ Erreur {league_code}: {e}")
+                logger.error(f"❌ Erreur {league_code}: {str(e)[:100]}")
                 continue
         
         logger.info(f"📊 Total: {len(all_matches)} matchs collectés")
@@ -268,6 +297,12 @@ class ESPNCollector:
                 away = next((c for c in competitors if c.get('homeAway') == 'away'), None)
                 
                 if not home or not away:
+                    continue
+                
+                # Vérifier si le match est programmé (pas terminé)
+                status = event.get('status', {}).get('type', {})
+                if status.get('completed') or status.get('id') == '3':
+                    logger.debug(f"Match terminé ignoré: {home.get('team', {}).get('displayName')} vs {away.get('team', {}).get('displayName')}")
                     continue
                 
                 match_data = {
@@ -307,6 +342,8 @@ class ESPNCollector:
                 if response.status == 200:
                     data = await response.json()
                     return self._extract_team_history(data, team_id, limit)
+                else:
+                    logger.warning(f"⚠️ Historique équipe {team_id}: HTTP {response.status}")
                     
         except Exception as e:
             logger.error(f"Erreur historique équipe {team_id}: {e}")
@@ -341,6 +378,11 @@ class ESPNCollector:
                 
                 if not team_data or not opponent_data:
                     continue
+                
+                # Vérifier si le match est terminé
+                status = event.get('status', {}).get('type', {})
+                if not (status.get('completed') or status.get('id') == '3'):
+                    continue  # Ignorer les matchs non terminés
                 
                 # Déterminer résultat
                 team_score = int(team_data.get('score', 0))
@@ -995,6 +1037,7 @@ Variables optionnelles:
   • MIN_CONFIDENCE (0.65)
   • LOG_LEVEL (INFO)
   • CLEANUP_DAYS (30)
+  • TEST_DATE (YYYYMMDD - date spécifique pour tests)
         """)
         return
     
