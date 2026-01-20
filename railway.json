@@ -19,7 +19,7 @@
     },
     "TIMEZONE": {
       "description": "Fuseau horaire",
-      "default": "Europe/Paris"
+      "default": "UTC"
     },
     "DAILY_TIME": {
       "description": "Heure d'envoi (HH:MM)",

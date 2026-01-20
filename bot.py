@@ -922,18 +922,18 @@ class Scheduler:
         signal.signal(signal.SIGINT, self.shutdown)
         signal.signal(signal.SIGTERM, self.shutdown)
     
-    def start(self):
-        """Démarre le planificateur"""
+    async def start(self):
+        """Démarre le planificateur de manière asynchrone"""
         logger.info("⏰ Planificateur Railway démarré")
         logger.info(f"📍 Fuseau: {Config.TIMEZONE}")
         logger.info(f"⏰ Heure quotidienne: {Config.DAILY_TIME}")
-        
+
         # Parser l'heure
         try:
             hour, minute = map(int, Config.DAILY_TIME.split(':'))
         except:
             hour, minute = 7, 0
-        
+
         # Planifier tâche quotidienne
         self.scheduler.add_job(
             self._daily_task,
@@ -941,25 +941,19 @@ class Scheduler:
             id='daily_football',
             name='Analyse football quotidienne'
         )
-        
+
         # Mode test immédiat
         if '--test' in sys.argv:
             logger.info("🧪 Mode test - exécution immédiate")
-            self.scheduler.add_job(
-                self._daily_task,
-                'date',
-                run_date=datetime.now()
-            )
-        
-        # Démarrer
+            # On appelle la tâche directement, sans passer par le scheduler
+            await self._daily_task()
+
+        # Démarrer le scheduler et maintenir en vie
         self.scheduler.start()
-        
-        # Maintenir en vie
         try:
-            import time
             while self.running:
-                time.sleep(60)
-        except KeyboardInterrupt:
+                await asyncio.sleep(1)
+        except (KeyboardInterrupt, SystemExit):
             self.shutdown()
     
     async def _daily_task(self):
@@ -1014,9 +1008,9 @@ Variables optionnelles:
         print("  Settings → Variables → New Variable")
         return
     
-    # Démarrer
+    # Démarrer le scheduler de manière asynchrone
     scheduler = Scheduler()
-    scheduler.start()
+    asyncio.run(scheduler.start())
 
 if __name__ == "__main__":
     main()
