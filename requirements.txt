@@ -1,2 +1,5 @@
 
-soccerdata
+Flask==2.3.3
+aiohttp==3.8.5
+apscheduler==3.10.4
+gunicorn==21.2.0
