@@ -18,6 +18,7 @@ from apscheduler.triggers.cron import CronTrigger
 import math
 import statistics
 import random # Pour la simulation ESPN
+
 # ==================== CONFIGURATION ====================
 class Config:
     """Configuration Railway"""
@@ -320,8 +321,8 @@ class OpenLigaDBCollector:
     def _filter_matches_for_date(self, matches_data, target_date):
         """Filtre une liste de matchs pour une date spécifique"""
         filtered = []
-        # ERREUR CORRIGEE ICI : ajout des ':'
-        for match in matches_:
+        # CORRIGÉ : Utilisation de la variable correcte 'matches_data'
+        for match in matches_data: # Remplace matches_ par matches_data
             try:
                 date_str = match.get('matchDateTime', '')
                 if not date_str:
@@ -375,9 +376,9 @@ class OpenLigaDBCollector:
             logger.debug(f"🔍 Historique OpenLigaDB pour {team_name} (ID: {team_id})")
             async with self.session.get(url, timeout=Config.API_TIMEOUT) as response:
                 if response.status == 200:
-                    data = await response.json()
-                    if isinstance(data, list):
-                        history = self._parse_team_history(data, team_id)
+                    raw_data = await response.json()
+                    if isinstance(raw_data, list):
+                        history = self._parse_team_history(raw_data, team_id)
                         logger.debug(f"  - {len(history)} matchs historiques OpenLigaDB trouvés pour {team_name}")
                         return history
                     else:
@@ -397,8 +398,8 @@ class OpenLigaDBCollector:
             logger.debug("Données d'historique OpenLigaDB non-liste")
             return []
 
-        # ERREUR CORRIGEE ICI : ajout des 'match in matches'
-        for match in matches: 
+        # CORRIGÉ : Boucle sur 'data', la liste d'origine
+        for match in data: # Remplace 'matches' par 'data'
             try:
                 if match.get('matchIsFinished', False):
                     score_team = 0
@@ -520,35 +521,76 @@ class ESPNCollector:
     def _parse_scoreboard(self, data, league_name):
         """Parse les données du scoreboard ESPN"""
         matches = []
-        if not data or 'events' not in data:
+        # Vérification robuste des clés de premier niveau
+        if not data or not isinstance(data, dict) or 'events' not in 
+            logger.debug("  - Réponse ESPN scoreboard vide ou structure inattendue.")
             return matches
 
-        for event in data['events']:
+        events = data['events']
+        if not isinstance(events, list):
+             logger.debug("  - Clé 'events' dans la réponse ESPN n'est pas une liste.")
+             return matches
+
+        for event in events:
             try:
-                competitions = event.get('competitions', [{}])[0]
-                competitors = competitions.get('competitors', [])
+                # Vérifier que l'event est un dict
+                if not isinstance(event, dict):
+                    logger.debug("  - Événement dans la liste ESPN n'est pas un dictionnaire.")
+                    continue
+
+                competitions = event.get('competitions', [{}])
+                if not competitions or not isinstance(competitions, list):
+                    logger.debug(f"  - Pas de compétition trouvée pour l'événement {event.get('id', 'unknown')}.")
+                    continue
+                
+                competition = competitions[0] # On prend la première compétition
+                if not isinstance(competition, dict):
+                    logger.debug(f"  - Compétition dans l'événement {event.get('id', 'unknown')} n'est pas un dictionnaire.")
+                    continue
+
+                competitors = competition.get('competitors', [])
                 
                 if len(competitors) != 2:
+                    logger.debug(f"  - Nombre de compétiteurs incorrect ({len(competitors)}) pour l'événement {event.get('id', 'unknown')}.")
                     continue
 
                 home_team = None
                 away_team = None
                 for competitor in competitors:
-                    if competitor.get('homeAway') == 'home':
-                        home_team = competitor.get('team', {})
-                    elif competitor.get('homeAway') == 'away':
-                        away_team = competitor.get('team', {})
+                    # Vérifier que le competitor est un dict
+                    if not isinstance(competitor, dict):
+                         logger.debug(f"  - Compétiteur dans l'événement {event.get('id', 'unknown')} n'est pas un dictionnaire.")
+                         continue
+                    home_away = competitor.get('homeAway')
+                    team_info = competitor.get('team', {})
+                    if not isinstance(team_info, dict):
+                         logger.debug(f"  - Info équipe dans l'événement {event.get('id', 'unknown')} n'est pas un dictionnaire.")
+                         continue
+                    if home_away == 'home':
+                        home_team = team_info
+                    elif home_away == 'away':
+                        away_team = team_info
 
                 if not home_team or not away_team:
+                    logger.debug(f"  - Équipe domicile ou extérieur manquante pour l'événement {event.get('id', 'unknown')}.")
                     continue
 
-                status = competitions.get('status', {})
-                is_finished = status.get('type', {}).get('completed', False)
+                status = competition.get('status', {})
+                # Vérifier que status est un dict
+                if not isinstance(status, dict):
+                    logger.debug(f"  - Statut dans l'événement {event.get('id', 'unknown')} n'est pas un dictionnaire.")
+                    is_finished = False # Valeur par défaut
+                else:
+                    is_finished = status.get('type', {}).get('completed', False)
+
+                # Récupération de l'ID et de la date de l'événement
+                event_id = event.get('id', '')
+                event_date = event.get('date', '')
 
                 match_data = {
-                    'match_id': event.get('id', ''),
+                    'match_id': event_id,
                     'league': league_name,
-                    'date': event.get('date', ''),
+                    'date': event_date,
                     'home_team': {
                         'id': home_team.get('id', ''),
                         'name': home_team.get('displayName', ''),
@@ -564,8 +606,8 @@ class ESPNCollector:
                 }
                 matches.append(match_data)
             except Exception as e:
-                logger.debug(f"Erreur parsing match ESPN: {e}")
-                continue
+                logger.debug(f"Erreur parsing match ESPN (év. {event.get('id', 'unknown')}): {e}")
+                continue # Passer au prochain événement
         return matches
 
     async def fetch_team_history(self, team_id, team_name, league_code, limit=10):
