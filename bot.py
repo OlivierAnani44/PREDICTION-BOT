@@ -399,7 +399,7 @@ class OpenLigaDBCollector:
             return []
 
         # CORRIGÉ (ligne 518): Boucle sur 'data', la liste d'origine
-        for match in  # Remplace 'matches' par 'data'
+        for match in data:  # Remplace 'matches' par 'data'
             try:
                 if match.get('matchIsFinished', False):
                     score_team = 0
@@ -522,7 +522,7 @@ class ESPNCollector:
         """Parse les données du scoreboard ESPN"""
         matches = []
         # CORRIGÉ (ligne 525): Complété la condition pour vérifier la clé 'events' dans 'data'
-        if not data or not isinstance(data, dict) or 'events' not in 
+        if not data or not isinstance(data, dict) or 'events' not in data:
             logger.debug("  - Réponse ESPN scoreboard vide ou structure inattendue.")
             return matches
 
