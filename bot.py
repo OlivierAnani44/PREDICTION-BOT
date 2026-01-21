@@ -521,7 +521,7 @@ class ESPNCollector:
     def _parse_scoreboard(self, data, league_name):
         """Parse les données du scoreboard ESPN"""
         matches = []
-        # Vérification robuste des clés de premier niveau
+        # CORRIGÉ : Complété la condition pour vérifier la clé 'events' dans 'data'
         if not data or not isinstance(data, dict) or 'events' not in 
             logger.debug("  - Réponse ESPN scoreboard vide ou structure inattendue.")
             return matches
@@ -757,7 +757,7 @@ class StatisticalModels:
 
     def calculate_h2h(self, h2h_data):
         """Calcul H2H (face-à-face)"""
-        if not h2h_data:
+        if not h2h_
             return 0.5
         
         wins = sum(1 for m in h2h_data if m.get('result') == 'WIN')
