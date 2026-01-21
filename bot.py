@@ -321,7 +321,7 @@ class OpenLigaDBCollector:
     def _filter_matches_for_date(self, matches_data, target_date):
         """Filtre une liste de matchs pour une date spécifique"""
         filtered = []
-        # CORRIGÉ : Utilisation de la variable correcte 'matches_data'
+        # CORRIGÉ (ligne 338): Utilisation de la variable correcte 'matches_data'
         for match in matches_data: # Remplace matches_ par matches_data
             try:
                 date_str = match.get('matchDateTime', '')
@@ -398,8 +398,8 @@ class OpenLigaDBCollector:
             logger.debug("Données d'historique OpenLigaDB non-liste")
             return []
 
-        # CORRIGÉ : Boucle sur 'data', la liste d'origine
-        for match in data: # Remplace 'matches' par 'data'
+        # CORRIGÉ (ligne 518): Boucle sur 'data', la liste d'origine
+        for match in  # Remplace 'matches' par 'data'
             try:
                 if match.get('matchIsFinished', False):
                     score_team = 0
@@ -521,7 +521,7 @@ class ESPNCollector:
     def _parse_scoreboard(self, data, league_name):
         """Parse les données du scoreboard ESPN"""
         matches = []
-        # CORRIGÉ : Complété la condition pour vérifier la clé 'events' dans 'data'
+        # CORRIGÉ (ligne 525): Complété la condition pour vérifier la clé 'events' dans 'data'
         if not data or not isinstance(data, dict) or 'events' not in 
             logger.debug("  - Réponse ESPN scoreboard vide ou structure inattendue.")
             return matches
@@ -757,7 +757,8 @@ class StatisticalModels:
 
     def calculate_h2h(self, h2h_data):
         """Calcul H2H (face-à-face)"""
-        if not h2h_
+        # CORRIGÉ (ligne 747): Utilisation de la variable correcte 'h2h_data'
+        if not h2h_data:
             return 0.5
         
         wins = sum(1 for m in h2h_data if m.get('result') == 'WIN')
